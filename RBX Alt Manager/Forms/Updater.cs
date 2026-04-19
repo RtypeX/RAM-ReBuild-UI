@@ -76,7 +76,7 @@ namespace Auto_Update
 #else
             using var client = new HttpClient() { Timeout = TimeSpan.FromMinutes(20) };
             client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36");
-            string Releases = await client.GetStringAsync("https://api.github.com/repos/ic3w0lf22/Roblox-Account-Manager/releases/tags/0.0");
+            string Releases = await client.GetStringAsync("https://api.github.com/repos/ic3w0lf22/Roblox-Account-Manager/releases/latest");
             Match match = Regex.Match(Releases, @"""browser_download_url"":\s*""?([^""]+)");
 
             if (match.Success && match.Groups.Count >= 2)

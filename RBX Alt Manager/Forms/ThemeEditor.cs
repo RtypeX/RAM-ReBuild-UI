@@ -9,25 +9,25 @@ namespace RBX_Alt_Manager.Forms
 {
     public partial class ThemeEditor : Form
     {
-        public static Color AccountBackground = SystemColors.Control;
-        public static Color AccountForeground = SystemColors.ControlText;
+        public static Color AccountBackground = ColorTranslator.FromHtml("#162033");
+        public static Color AccountForeground = ColorTranslator.FromHtml("#F8FAFC");
 
-        public static Color ButtonsBackground = SystemColors.Control;
-        public static Color ButtonsForeground = SystemColors.ControlText;
-        public static Color ButtonsBorder = SystemColors.Control;
-        public static FlatStyle ButtonStyle = FlatStyle.Standard;
+        public static Color ButtonsBackground = ColorTranslator.FromHtml("#1D2B44");
+        public static Color ButtonsForeground = ColorTranslator.FromHtml("#F8FAFC");
+        public static Color ButtonsBorder = ColorTranslator.FromHtml("#4F6B95");
+        public static FlatStyle ButtonStyle = FlatStyle.Flat;
 
-        public static Color FormsBackground = SystemColors.Control;
-        public static Color FormsForeground = SystemColors.ControlText;
+        public static Color FormsBackground = ColorTranslator.FromHtml("#0B1220");
+        public static Color FormsForeground = ColorTranslator.FromHtml("#F8FAFC");
         public static bool UseDarkTopBar = true;
         public static bool ShowHeaders = true;
 
-        public static Color TextBoxesBackground = SystemColors.Control;
-        public static Color TextBoxesForeground = SystemColors.ControlText;
-        public static Color TextBoxesBorder = Color.FromArgb(0x7A7A7A);
+        public static Color TextBoxesBackground = ColorTranslator.FromHtml("#111A2B");
+        public static Color TextBoxesForeground = ColorTranslator.FromHtml("#F8FAFC");
+        public static Color TextBoxesBorder = ColorTranslator.FromHtml("#38506F");
 
-        public static Color LabelBackground = SystemColors.Control;
-        public static Color LabelForeground = SystemColors.ControlText;
+        public static Color LabelBackground = ColorTranslator.FromHtml("#162033");
+        public static Color LabelForeground = ColorTranslator.FromHtml("#D6E2F3");
         public static bool LabelTransparent = true;
         
         public static bool LightImages = false;
@@ -50,49 +50,7 @@ namespace RBX_Alt_Manager.Forms
         {
             BackColor = FormsBackground;
             ForeColor = FormsForeground;
-
-            foreach (Control control in this.Controls)
-            {
-                if (control is Button || control is CheckBox)
-                {
-                    if (control is Button)
-                    {
-                        Button b = control as Button;
-                        b.FlatStyle = ButtonStyle;
-                        b.FlatAppearance.BorderColor = ButtonsBorder;
-                    }
-
-                    if (!(control is CheckBox)) control.BackColor = ButtonsBackground;
-                    control.ForeColor = ButtonsForeground;
-                }
-                else if (control is TextBox || control is RichTextBox)
-                {
-                    if (control is Classes.BorderedTextBox)
-                    {
-                        Classes.BorderedTextBox b = control as Classes.BorderedTextBox;
-                        b.BorderColor = TextBoxesBorder;
-                    }
-
-                    if (control is Classes.BorderedRichTextBox)
-                    {
-                        Classes.BorderedRichTextBox b = control as Classes.BorderedRichTextBox;
-                        b.BorderColor = TextBoxesBorder;
-                    }
-
-                    control.BackColor = TextBoxesBackground;
-                    control.ForeColor = TextBoxesForeground;
-                }
-                else if (control is Label)
-                {
-                    control.BackColor = LabelTransparent ? Color.Transparent : LabelBackground;
-                    control.ForeColor = LabelForeground;
-                }
-                else if (control is ListBox)
-                {
-                    control.BackColor = ButtonsBackground;
-                    control.ForeColor = ButtonsForeground;
-                }
-            }
+            Controls.ApplyTheme();
         }
 
         public static void LoadTheme()
@@ -129,6 +87,12 @@ namespace RBX_Alt_Manager.Forms
 
             if (!Theme.Exists("LightImages")) Theme.Set("LightImages", FormsBackground.GetBrightness() < 0.5 ? "true" : "false");
             if (bool.TryParse(Theme.Get("LightImages"), out bool bLightImages)) LightImages = bLightImages;
+
+            if (!Theme.Exists("ThemeVersion") && IsLegacyDefaultTheme())
+            {
+                ApplyRefreshedDefaults();
+                SaveTheme();
+            }
         }
 
         public static void SaveTheme()
@@ -158,8 +122,43 @@ namespace RBX_Alt_Manager.Forms
             Theme.Set("LabelsTransparent", LabelTransparent.ToString());
 
             Theme.Set("LightImages", LightImages.ToString());
+            Theme.Set("ThemeVersion", "2");
 
             ThemeIni.Save("RAMTheme.ini");
+        }
+
+        private static bool IsLegacyDefaultTheme() =>
+            AccountBackground == ColorTranslator.FromHtml("#1E1F28") &&
+            AccountForeground == ColorTranslator.FromHtml("#FFFFFF") &&
+            ButtonsBackground == ColorTranslator.FromHtml("#292929") &&
+            ButtonsForeground == ColorTranslator.FromHtml("#FFFFFF") &&
+            ButtonsBorder == ColorTranslator.FromHtml("#282828") &&
+            ButtonStyle == FlatStyle.Popup &&
+            FormsBackground == ColorTranslator.FromHtml("#292929") &&
+            FormsForeground == ColorTranslator.FromHtml("#FFFFFF") &&
+            TextBoxesBackground == ColorTranslator.FromHtml("#3A3A3A") &&
+            TextBoxesForeground == ColorTranslator.FromHtml("#FFFFFF") &&
+            TextBoxesBorder == ColorTranslator.FromHtml("#282828");
+
+        private static void ApplyRefreshedDefaults()
+        {
+            AccountBackground = ColorTranslator.FromHtml("#162033");
+            AccountForeground = ColorTranslator.FromHtml("#F8FAFC");
+            ButtonsBackground = ColorTranslator.FromHtml("#1D2B44");
+            ButtonsForeground = ColorTranslator.FromHtml("#F8FAFC");
+            ButtonsBorder = ColorTranslator.FromHtml("#4F6B95");
+            ButtonStyle = FlatStyle.Flat;
+            FormsBackground = ColorTranslator.FromHtml("#0B1220");
+            FormsForeground = ColorTranslator.FromHtml("#F8FAFC");
+            TextBoxesBackground = ColorTranslator.FromHtml("#111A2B");
+            TextBoxesForeground = ColorTranslator.FromHtml("#F8FAFC");
+            TextBoxesBorder = ColorTranslator.FromHtml("#38506F");
+            LabelBackground = ColorTranslator.FromHtml("#162033");
+            LabelForeground = ColorTranslator.FromHtml("#D6E2F3");
+            LabelTransparent = true;
+            LightImages = true;
+            UseDarkTopBar = true;
+            ShowHeaders = true;
         }
 
         private void SetBG_Click(object sender, EventArgs e)

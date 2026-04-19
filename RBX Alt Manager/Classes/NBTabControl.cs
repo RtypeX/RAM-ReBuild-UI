@@ -1,6 +1,7 @@
-﻿using System;
+using System;
 using System.ComponentModel;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -8,11 +9,6 @@ namespace RBX_Alt_Manager.Classes
 {
     internal class NBTabControl : TabControl
     {
-        // https://dotnetrix.co.uk/tabcontrol.htm
-
-        /// <summary> 
-        /// Required designer variable.
-        /// </summary>
         private Container components = null;
 
         public NBTabControl()
@@ -22,28 +18,16 @@ namespace RBX_Alt_Manager.Classes
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.DoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
         }
 
-        /// <summary> 
-        /// Clean up any resources being used.
-        /// </summary>
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
-                if (components != null)
-                    components.Dispose();
+            if (disposing && components != null)
+                components.Dispose();
 
             base.Dispose(disposing);
         }
 
-        #region Component Designer generated code
-        /// <summary> 
-        /// Required method for Designer support - do not modify 
-        /// the contents of this method with the code editor.
-        /// </summary>
         private void InitializeComponent() =>
-            components = new System.ComponentModel.Container();
-        #endregion
-
-        #region Interop
+            components = new Container();
 
         [StructLayout(LayoutKind.Sequential)]
         private struct NMHDR
@@ -51,44 +35,33 @@ namespace RBX_Alt_Manager.Classes
             public IntPtr HWND;
             public uint idFrom;
             public int code;
-            public override String ToString()
-            {
-                return String.Format("Hwnd: {0}, ControlID: {1}, Code: {2}", HWND, idFrom, code);
-            }
         }
 
-        private const int TCN_FIRST = 0 - 550;
-        private const int TCN_SELCHANGING = (TCN_FIRST - 2);
-
+        private const int TCN_FIRST = -550;
+        private const int TCN_SELCHANGING = TCN_FIRST - 2;
         private const int WM_USER = 0x400;
         private const int WM_NOTIFY = 0x4E;
         private const int WM_REFLECT = WM_USER + 0x1C00;
 
-        #endregion
-
-        #region BackColor Manipulation
-
         private Color m_Backcolor = Color.Empty;
+
         [Browsable(true), Description("The background color used to display text and graphics in a control.")]
         public override Color BackColor
         {
             get
             {
                 if (m_Backcolor.Equals(Color.Empty))
-                {
-                    if (Parent == null)
-                        return Control.DefaultBackColor;
-                    else
-                        return Parent.BackColor;
-                }
+                    return Parent == null ? Control.DefaultBackColor : Parent.BackColor;
+
                 return m_Backcolor;
             }
             set
             {
-                if (m_Backcolor.Equals(value)) return;
+                if (m_Backcolor.Equals(value))
+                    return;
+
                 m_Backcolor = value;
                 Invalidate();
-
                 base.OnBackColorChanged(EventArgs.Empty);
             }
         }
@@ -100,8 +73,6 @@ namespace RBX_Alt_Manager.Classes
             m_Backcolor = Color.Empty;
             Invalidate();
         }
-
-        #endregion
 
         protected override void OnParentBackColorChanged(EventArgs e)
         {
@@ -117,74 +88,84 @@ namespace RBX_Alt_Manager.Classes
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            base.OnPaint(e);
-
             e.Graphics.Clear(BackColor);
-            Rectangle r = ClientRectangle;
 
-            if (TabCount <= 0) return;
+            if (TabCount <= 0 || SelectedIndex < 0)
+                return;
 
-            StringFormat sf = new StringFormat();
-            sf.Alignment = StringAlignment.Center;
-            sf.LineAlignment = StringAlignment.Center;
-            r = SelectedTab.Bounds;
-                // new Rectangle(SelectedTab.Bounds.X, SelectedTab.Bounds.Y, (int)(SelectedTab.Bounds.Width * Program.Scale), (int)(SelectedTab.Bounds.Height * Program.Scale));
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
-            r.Inflate(3, 3);
+            using StringFormat sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            using SolidBrush textBrush = new SolidBrush(TabPages[SelectedIndex].ForeColor);
 
-            TabPage tp = TabPages[SelectedIndex];
-            SolidBrush PaintBrush = new SolidBrush(tp.BackColor);
+            Rectangle selectedBounds = SelectedTab.Bounds;
+            selectedBounds.Inflate(2, 2);
 
-            e.Graphics.FillRectangle(PaintBrush, r);
+            using (GraphicsPath pagePath = CreateRoundedRectangle(selectedBounds, 8))
+            using (SolidBrush pageBrush = new SolidBrush(TabPages[SelectedIndex].BackColor))
+            using (Pen pagePen = new Pen(ControlPaint.Light(TabPages[SelectedIndex].BackColor, 0.12f)))
+            {
+                e.Graphics.FillPath(pageBrush, pagePath);
+                e.Graphics.DrawPath(pagePen, pagePath);
+            }
 
-            Color br = PaintBrush.Color.GetBrightness() < 0.4 ? ControlPaint.Light(PaintBrush.Color, 0.7f) : ControlPaint.Dark(PaintBrush.Color, 0.7f);
-            ControlPaint.DrawBorder(e.Graphics, r,
-                br, 1, ButtonBorderStyle.Solid,
-                br, 1, ButtonBorderStyle.Solid,
-                br, 1, ButtonBorderStyle.Solid,
-                br, 1, ButtonBorderStyle.Solid);
-
-            for (int index = 0; index <= TabCount - 1; index++)
-                PaintTabButton(index, e, r, PaintBrush, sf);
-
-            PaintBrush.Dispose();
+            for (int index = 0; index < TabCount; index++)
+                PaintTabButton(index, e, textBrush, sf);
         }
 
-        private void PaintTabButton(int index, PaintEventArgs e, Rectangle r, SolidBrush PaintBrush, StringFormat sf)
+        private void PaintTabButton(int index, PaintEventArgs e, SolidBrush textBrush, StringFormat sf)
         {
             TabPage tp = TabPages[index];
-            r = GetTabRect(index);
-            // r = new Rectangle((int)(r.X*Program.Scale), r.Y, (int)(r.Width * Program.Scale), (int)(r.Height * 1f));
+            Rectangle bounds = Rectangle.Inflate(GetTabRect(index), -2, -2);
             bool isSelected = index == SelectedIndex;
-            ButtonBorderStyle bs = index == SelectedIndex ? ButtonBorderStyle.Solid : ButtonBorderStyle.Solid;
+            Color fill = isSelected ? tp.BackColor : ControlPaint.Dark(tp.BackColor, 0.08f);
+            Color border = isSelected ? ControlPaint.Light(fill, 0.18f) : ControlPaint.Light(fill, 0.08f);
 
-            PaintBrush.Color = tp.BackColor;
-            e.Graphics.FillRectangle(PaintBrush, r);
+            using (GraphicsPath tabPath = CreateRoundedRectangle(bounds, 8))
+            using (SolidBrush tabBrush = new SolidBrush(fill))
+            using (Pen tabPen = new Pen(border))
+            {
+                e.Graphics.FillPath(tabBrush, tabPath);
+                e.Graphics.DrawPath(tabPen, tabPath);
+            }
 
-            Color br = PaintBrush.Color.GetBrightness() < 0.4 ? ControlPaint.Light(PaintBrush.Color, isSelected ? 1f : 0.4f) : ControlPaint.Dark(PaintBrush.Color, isSelected ? 1f : 0.4f);
-            ControlPaint.DrawBorder(e.Graphics, r,
-                br, 1, bs,
-                br, 1, bs,
-                br, 1, bs,
-                br, 1, isSelected ? ButtonBorderStyle.None : bs);
-            PaintBrush.Color = tp.ForeColor;
+            textBrush.Color = tp.ForeColor;
+            Rectangle textBounds = bounds;
 
             if (Alignment == TabAlignment.Left || Alignment == TabAlignment.Right)
             {
-                float RotateAngle = 90;
-                if (Alignment == TabAlignment.Left) RotateAngle = 270;
-                PointF cp = new PointF(r.Left + (r.Width >> 1), r.Top + (r.Height >> 1));
-                e.Graphics.TranslateTransform(cp.X, cp.Y);
-                e.Graphics.RotateTransform(RotateAngle);
-                r = new Rectangle(-(r.Height >> 1), -(r.Width >> 1), r.Height, r.Width);
+                float rotateAngle = Alignment == TabAlignment.Left ? 270 : 90;
+                PointF centerPoint = new PointF(bounds.Left + (bounds.Width >> 1), bounds.Top + (bounds.Height >> 1));
+                e.Graphics.TranslateTransform(centerPoint.X, centerPoint.Y);
+                e.Graphics.RotateTransform(rotateAngle);
+                textBounds = new Rectangle(-(bounds.Height >> 1), -(bounds.Width >> 1), bounds.Height, bounds.Width);
             }
 
             if (tp.Enabled)
-                e.Graphics.DrawString(tp.Text, Font, PaintBrush, (RectangleF)r, sf);
+                e.Graphics.DrawString(tp.Text, Font, textBrush, textBounds, sf);
             else
-                ControlPaint.DrawStringDisabled(e.Graphics, tp.Text, Font, tp.BackColor, (RectangleF)r, sf);
+                ControlPaint.DrawStringDisabled(e.Graphics, tp.Text, Font, tp.BackColor, textBounds, sf);
 
             e.Graphics.ResetTransform();
+        }
+
+        private static GraphicsPath CreateRoundedRectangle(Rectangle bounds, int radius)
+        {
+            int diameter = radius * 2;
+            Rectangle arc = new Rectangle(bounds.Location, new Size(diameter, diameter));
+            GraphicsPath path = new GraphicsPath();
+
+            path.AddArc(arc, 180, 90);
+            arc.X = bounds.Right - diameter;
+            path.AddArc(arc, 270, 90);
+            arc.Y = bounds.Bottom - diameter;
+            path.AddArc(arc, 0, 90);
+            arc.X = bounds.Left;
+            path.AddArc(arc, 90, 90);
+            path.CloseFigure();
+
+            return path;
         }
 
         [Description("Occurs as a tab is being changed.")]
@@ -194,15 +175,17 @@ namespace RBX_Alt_Manager.Classes
         {
             if (m.Msg == (WM_REFLECT + WM_NOTIFY))
             {
-                NMHDR hdr = (NMHDR)(Marshal.PtrToStructure(m.LParam, typeof(NMHDR)));
+                NMHDR hdr = (NMHDR)Marshal.PtrToStructure(m.LParam, typeof(NMHDR));
+
                 if (hdr.code == TCN_SELCHANGING)
                 {
                     TabPage tp = TestTab(PointToClient(Cursor.Position));
+
                     if (tp != null)
                     {
                         TabPageChangeEventArgs e = new TabPageChangeEventArgs(SelectedTab, tp);
-                        if (SelectedIndexChanging != null)
-                            SelectedIndexChanging(this, e);
+                        SelectedIndexChanging?.Invoke(this, e);
+
                         if (e.Cancel || tp.Enabled == false)
                         {
                             m.Result = new IntPtr(1);
@@ -211,12 +194,13 @@ namespace RBX_Alt_Manager.Classes
                     }
                 }
             }
+
             base.WndProc(ref m);
         }
 
         private TabPage TestTab(Point pt)
         {
-            for (int index = 0; index <= TabCount - 1; index++)
+            for (int index = 0; index < TabCount; index++)
                 if (GetTabRect(index).Contains(pt.X, pt.Y))
                     return TabPages[index];
 

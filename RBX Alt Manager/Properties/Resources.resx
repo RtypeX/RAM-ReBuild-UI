@@ -150,21 +150,24 @@
   </data>
   <data name="DefaultTheme" xml:space="preserve">
     <value>[Roblox Account Manager]
-AccountsBG=#1E1F28
-AccountsFG=#FFFFFF
-ButtonsBG=#292929
-ButtonsFG=#FFFFFF
-ButtonsBC=#282828
-ButtonStyle=Popup
-FormsBG=#292929
-FormsFG=#FFFFFF
+AccountsBG=#162033
+AccountsFG=#F8FAFC
+ButtonsBG=#1D2B44
+ButtonsFG=#F8FAFC
+ButtonsBC=#4F6B95
+ButtonStyle=Flat
+FormsBG=#0B1220
+FormsFG=#F8FAFC
 DarkTopBar=True
 LightImages=True
 LabelsTransparent=True
 ShowHeaders=True
-TextBoxesBG=#3A3A3A
-TextBoxesFG=#FFFFFF
-TextBoxesBC=#282828</value>
+TextBoxesBG=#111A2B
+TextBoxesFG=#F8FAFC
+TextBoxesBC=#38506F
+LabelsBC=#162033
+LabelsFC=#D6E2F3
+ThemeVersion=2</value>
   </data>
   <data name="ShuffleIcon" type="System.Resources.ResXFileRef, System.Windows.Forms">
     <value>..\Resources\shuffle-crossing-arrows.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
@@ -221,7 +224,7 @@ end</value>
     <value>..\app.config;System.Byte[], mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
   </data>
   <data name="AppConfigHash" xml:space="preserve">
-    <value>5E0BA1895CF088E6D6907B8ABBD8CD41C86F39CC642351A9AB0BF458BF1F5B31</value>
+    <value>B2823A43981D0B89DF695896CECDD2442CBAE63CECFE02973C26C6C458A8E688</value>
   </data>
   <data name="log4" type="System.Resources.ResXFileRef, System.Windows.Forms">
     <value>..\log4.config;System.Byte[], mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>

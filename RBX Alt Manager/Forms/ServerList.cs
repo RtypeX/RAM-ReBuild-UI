@@ -74,60 +74,7 @@ namespace RBX_Alt_Manager
 
         public void ApplyTheme(Control.ControlCollection _Controls)
         {
-            foreach (Control control in _Controls)
-            {
-                if (control is Button || control is CheckBox)
-                {
-                    if (control is Button)
-                    {
-                        Button b = control as Button;
-                        b.FlatStyle = ThemeEditor.ButtonStyle;
-                        b.FlatAppearance.BorderColor = ThemeEditor.ButtonsBorder;
-                    }
-
-                    if (!(control is CheckBox)) control.BackColor = ThemeEditor.ButtonsBackground;
-                    control.ForeColor = ThemeEditor.ButtonsForeground;
-                }
-                else if (control is TextBox || control is RichTextBox)
-                {
-                    if (control is Classes.BorderedTextBox)
-                    {
-                        Classes.BorderedTextBox b = control as Classes.BorderedTextBox;
-                        b.BorderColor = ThemeEditor.TextBoxesBorder;
-                    }
-
-                    if (control is Classes.BorderedRichTextBox)
-                    {
-                        Classes.BorderedRichTextBox b = control as Classes.BorderedRichTextBox;
-                        b.BorderColor = ThemeEditor.TextBoxesBorder;
-                    }
-
-                    control.BackColor = ThemeEditor.TextBoxesBackground;
-                    control.ForeColor = ThemeEditor.TextBoxesForeground;
-                }
-                else if (control is Label)
-                {
-                    control.BackColor = ThemeEditor.LabelTransparent ? Color.Transparent : ThemeEditor.LabelBackground;
-                    control.ForeColor = ThemeEditor.LabelForeground;
-                }
-                else if (control is ListBox || control is ObjectListView)
-                {
-                    if (control is ObjectListView view) view.HeaderStyle = ThemeEditor.ShowHeaders ? ColumnHeaderStyle.Clickable : ColumnHeaderStyle.None;
-                    control.BackColor = ThemeEditor.ButtonsBackground;
-                    control.ForeColor = ThemeEditor.ButtonsForeground;
-                }
-                else if (control is TabPage)
-                {
-                    ApplyTheme(control.Controls);
-
-                    control.BackColor = ThemeEditor.ButtonsBackground;
-                    control.ForeColor = ThemeEditor.ButtonsForeground;
-                }
-                else if (control is FastColoredTextBoxNS.FastColoredTextBox)
-                    control.ForeColor = Color.Black;
-                else if (control is FlowLayoutPanel || control is Panel || control is TabControl)
-                    ApplyTheme(control.Controls);
-            }
+            _Controls.ApplyTheme();
         }
 
         #endregion

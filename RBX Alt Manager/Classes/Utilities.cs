@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Management;
@@ -246,54 +247,246 @@ public static Color Lerp(this Color s, Color t, float k)
     {
         foreach (Control control in Controls)
         {
-            if (control is PictureBox)
-            {
-                control.BackColor = Color.Transparent;
-                if (ThemeEditor.LightImages && control.GetLuminance(out float L) && L < 0.3) control.ColorImage(255, 255, 255);
-            }
-            else if (control is Button || control is CheckBox)
-            {
-                if (control is Button)
-                {
-                    if (ThemeEditor.LightImages && control.GetLuminance(out float L) && L < 0.3)
-                        control.ColorImage(255, 255, 255);
-
-                    Button b = control as Button;
-                    b.FlatStyle = ThemeEditor.ButtonStyle;
-                    b.FlatAppearance.BorderColor = ThemeEditor.ButtonsBorder;
-                }
-
-                if (!(control is CheckBox)) control.BackColor = ThemeEditor.ButtonsBackground;
-                control.ForeColor = ThemeEditor.ButtonsForeground;
-            }
-            else if (control is TextBox || control is RichTextBox)
-            {
-                if (control is BorderedTextBox)
-                {
-                    BorderedTextBox b = control as BorderedTextBox;
-                    b.BorderColor = ThemeEditor.TextBoxesBorder;
-                }
-
-                if (control is BorderedRichTextBox)
-                {
-                    BorderedRichTextBox b = control as BorderedRichTextBox;
-                    b.BorderColor = ThemeEditor.TextBoxesBorder;
-                }
-
-                control.BackColor = ThemeEditor.TextBoxesBackground;
-                control.ForeColor = ThemeEditor.TextBoxesForeground;
-            }
-            else if (control is Label)
-            {
-                control.BackColor = ThemeEditor.LabelTransparent ? Color.Transparent : ThemeEditor.LabelBackground;
-                control.ForeColor = ThemeEditor.LabelForeground;
-            }
-            else if (control is ProgressBar)
-                control.BackColor = ThemeEditor.LabelBackground;
-            else if (control is Panel)
-                control.Controls.ApplyTheme();
+            control.ApplyTheme();
         }
     }
+
+    public static void ApplyTheme(this Control control)
+    {
+        if (control == null)
+            return;
+
+        if (!(control.Tag is string tag && tag == "UseControlFont"))
+            ApplyControlFont(control);
+
+        if (control.ContextMenuStrip != null)
+            control.ContextMenuStrip.ApplyTheme();
+
+        if (control is MenuButton menuButton && menuButton.Menu != null)
+            menuButton.Menu.ApplyTheme();
+
+        if (control is PictureBox)
+        {
+            control.BackColor = Color.Transparent;
+
+            if (ThemeEditor.LightImages && control.GetLuminance(out float luminance) && luminance < 0.3)
+                control.ColorImage(255, 255, 255);
+        }
+        else if (control is Button button)
+            ApplyButtonTheme(button);
+        else if (control is CheckBox checkBox)
+            ApplyCheckBoxTheme(checkBox);
+        else if (control is TextBox || control is RichTextBox)
+            ApplyTextInputTheme(control);
+        else if (control is LinkLabel linkLabel)
+            ApplyLinkLabelTheme(linkLabel);
+        else if (control is Label)
+            ApplyLabelTheme(control);
+        else if (control is GroupBox groupBox)
+            ApplyGroupBoxTheme(groupBox);
+        else if (control is ListBox listBox)
+            ApplyListBoxTheme(listBox);
+        else if (control is ObjectListView objectListView)
+            ApplyObjectListViewTheme(objectListView);
+        else if (control is ProgressBar)
+            control.BackColor = ThemeEditor.LabelBackground;
+        else if (control is TabControl tabControl)
+            ApplyTabControlTheme(tabControl);
+        else if (control is TabPage tabPage)
+            ApplyTabPageTheme(tabPage);
+        else if (control is Panel || control is FlowLayoutPanel || control is SplitContainer || control is UserControl)
+            ApplyContainerTheme(control);
+        else if (control is FastColoredTextBoxNS.FastColoredTextBox)
+            control.ForeColor = Color.Black;
+
+        if (control.HasChildren)
+            control.Controls.ApplyTheme();
+    }
+
+    public static void ApplyTheme(this ToolStrip strip)
+    {
+        if (strip == null)
+            return;
+
+        strip.Renderer = new ThemedToolStripRenderer();
+        strip.BackColor = GetMenuBackground();
+        strip.ForeColor = ThemeEditor.ButtonsForeground;
+        strip.Font = GetControlFont(strip.Font, 0f, FontStyle.Regular);
+        strip.Padding = strip is MenuStrip ? new Padding(8, 4, 8, 4) : new Padding(2);
+
+        ApplyTheme(strip.Items);
+    }
+
+    public static void ApplyTheme(this ToolStripItemCollection items)
+    {
+        if (items == null)
+            return;
+
+        foreach (ToolStripItem item in items)
+        {
+            item.BackColor = GetMenuBackground();
+            item.ForeColor = ThemeEditor.ButtonsForeground;
+            item.Font = GetControlFont(item.Font, 0f, item is ToolStripMenuItem ? FontStyle.Regular : FontStyle.Regular);
+
+            if (item is ToolStripDropDownItem dropDownItem)
+            {
+                dropDownItem.DropDown.BackColor = GetMenuBackground();
+                dropDownItem.DropDown.ForeColor = ThemeEditor.ButtonsForeground;
+                dropDownItem.DropDown.Renderer = new ThemedToolStripRenderer();
+                ApplyTheme(dropDownItem.DropDownItems);
+            }
+        }
+    }
+
+    private static void ApplyButtonTheme(Button button)
+    {
+        if (ThemeEditor.LightImages && button.GetLuminance(out float luminance) && luminance < 0.3)
+            button.ColorImage(255, 255, 255);
+
+        button.FlatStyle = FlatStyle.Flat;
+        button.UseVisualStyleBackColor = false;
+        button.BackColor = ThemeEditor.ButtonsBackground;
+        button.ForeColor = ThemeEditor.ButtonsForeground;
+        button.FlatAppearance.BorderColor = ThemeEditor.ButtonsBorder;
+        button.FlatAppearance.BorderSize = 1;
+        button.FlatAppearance.MouseOverBackColor = ThemeEditor.ButtonsBackground.Lerp(Color.White, 0.08f);
+        button.FlatAppearance.MouseDownBackColor = ThemeEditor.ButtonsBackground.Lerp(Color.Black, 0.15f);
+
+        if (button is MenuButton)
+            button.Padding = new Padding(10, 0, 24, 0);
+        else if (button.Padding == Padding.Empty)
+            button.Padding = new Padding(10, 0, 10, 0);
+    }
+
+    private static void ApplyCheckBoxTheme(CheckBox checkBox)
+    {
+        checkBox.BackColor = Color.Transparent;
+        checkBox.ForeColor = ThemeEditor.ButtonsForeground;
+        checkBox.FlatStyle = FlatStyle.Standard;
+        checkBox.UseVisualStyleBackColor = false;
+    }
+
+    private static void ApplyTextInputTheme(Control control)
+    {
+        if (control is BorderedTextBox borderedTextBox)
+            borderedTextBox.BorderColor = ThemeEditor.TextBoxesBorder;
+
+        if (control is BorderedRichTextBox borderedRichTextBox)
+            borderedRichTextBox.BorderColor = ThemeEditor.TextBoxesBorder;
+
+        control.BackColor = ThemeEditor.TextBoxesBackground;
+        control.ForeColor = ThemeEditor.TextBoxesForeground;
+    }
+
+    private static void ApplyLabelTheme(Control control)
+    {
+        control.BackColor = ThemeEditor.LabelTransparent ? Color.Transparent : ThemeEditor.LabelBackground;
+        control.ForeColor = ThemeEditor.LabelForeground;
+    }
+
+    private static void ApplyLinkLabelTheme(LinkLabel linkLabel)
+    {
+        linkLabel.BackColor = ThemeEditor.LabelTransparent ? Color.Transparent : ThemeEditor.LabelBackground;
+        linkLabel.ForeColor = ThemeEditor.LabelForeground;
+        linkLabel.LinkColor = ThemeEditor.LabelForeground;
+        linkLabel.ActiveLinkColor = ThemeEditor.ButtonsForeground.Lerp(Color.White, 0.15f);
+        linkLabel.VisitedLinkColor = ThemeEditor.LabelForeground.Lerp(ThemeEditor.ButtonsBorder, 0.35f);
+    }
+
+    private static void ApplyGroupBoxTheme(GroupBox groupBox)
+    {
+        groupBox.BackColor = GetContainerBackground();
+        groupBox.ForeColor = ThemeEditor.LabelForeground;
+    }
+
+    private static void ApplyContainerTheme(Control control)
+    {
+        if (control.Parent is Form)
+            control.BackColor = ThemeEditor.FormsBackground;
+        else if (!(control is SplitContainer))
+            control.BackColor = GetContainerBackground();
+
+        control.ForeColor = ThemeEditor.FormsForeground;
+    }
+
+    private static void ApplyListBoxTheme(ListBox listBox)
+    {
+        listBox.BackColor = GetContainerBackground();
+        listBox.ForeColor = ThemeEditor.ButtonsForeground;
+        listBox.BorderStyle = BorderStyle.FixedSingle;
+    }
+
+    private static void ApplyObjectListViewTheme(ObjectListView view)
+    {
+        Color listBackground = ThemeEditor.AccountBackground;
+        Color alternateRow = listBackground.Lerp(Color.White, 0.04f);
+        Color selectedBackground = ThemeEditor.ButtonsBorder.Lerp(ThemeEditor.ButtonsBackground, 0.35f);
+
+        view.BackColor = listBackground;
+        view.ForeColor = ThemeEditor.AccountForeground;
+        view.BorderStyle = BorderStyle.None;
+        view.HeaderStyle = ThemeEditor.ShowHeaders ? (view.ShowGroups ? ColumnHeaderStyle.Nonclickable : ColumnHeaderStyle.Clickable) : ColumnHeaderStyle.None;
+        view.GridLines = false;
+        view.FullRowSelect = true;
+        view.HideSelection = false;
+
+        TrySetProperty(view, "UseCustomSelectionColors", true);
+        TrySetProperty(view, "UseAlternatingBackColors", true);
+        TrySetProperty(view, "AlternateRowBackColor", alternateRow);
+        TrySetProperty(view, "AlternateRowBackColorOrDefault", alternateRow);
+        TrySetProperty(view, "SelectedBackColor", selectedBackground);
+        TrySetProperty(view, "SelectedForeColor", ThemeEditor.AccountForeground);
+        TrySetProperty(view, "HighlightBackgroundColor", selectedBackground);
+        TrySetProperty(view, "HighlightForegroundColor", ThemeEditor.AccountForeground);
+        TrySetProperty(view, "HeaderUsesThemes", false);
+    }
+
+    private static void ApplyTabControlTheme(TabControl tabControl)
+    {
+        tabControl.BackColor = ThemeEditor.FormsBackground;
+        tabControl.ForeColor = ThemeEditor.ButtonsForeground;
+
+        foreach (TabPage page in tabControl.TabPages)
+            ApplyTabPageTheme(page);
+    }
+
+    private static void ApplyTabPageTheme(TabPage tabPage)
+    {
+        tabPage.BackColor = GetContainerBackground();
+        tabPage.ForeColor = ThemeEditor.ButtonsForeground;
+    }
+
+    private static void ApplyControlFont(Control control)
+    {
+        if (control.Font == null)
+            return;
+
+        FontStyle style = control is Button || control is MenuButton ? FontStyle.Bold : control.Font.Style;
+        control.Font = GetControlFont(control.Font, 0f, style);
+    }
+
+    private static Font GetControlFont(Font currentFont, float sizeOffset, FontStyle style)
+    {
+        currentFont ??= SystemFonts.DefaultFont;
+
+        string familyName = FontFamily.Families.Any(f => f.Name == "Segoe UI") ? "Segoe UI" : currentFont.FontFamily.Name;
+        return new Font(familyName, currentFont.Size + sizeOffset, style, GraphicsUnit.Point);
+    }
+
+    private static bool TrySetProperty(object target, string propertyName, object value)
+    {
+        PropertyInfo property = target?.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
+
+        if (property == null || !property.CanWrite)
+            return false;
+
+        property.SetValue(target, value);
+        return true;
+    }
+
+    private static Color GetContainerBackground() => ThemeEditor.AccountBackground.Lerp(ThemeEditor.FormsBackground, 0.4f);
+
+    private static Color GetMenuBackground() => ThemeEditor.FormsBackground.Lerp(ThemeEditor.ButtonsBackground, 0.5f);
 
     public static Color DarkenOrBrighten(this Color color, float Percent) => color.GetBrightness() < 0.5 ? ControlPaint.Light(color, Percent) : ControlPaint.Dark(color, Percent);
 
@@ -430,4 +623,74 @@ public static class HttpExtensions
             progress?.Report(totalBytesRead);
         }
     }
+}
+
+internal sealed class ThemedToolStripRenderer : ToolStripProfessionalRenderer
+{
+    public ThemedToolStripRenderer() : base(new ThemedColorTable()) { }
+
+    protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+    {
+        using Pen borderPen = new Pen(ThemeEditor.ButtonsBorder);
+        Rectangle border = new Rectangle(Point.Empty, e.ToolStrip.Size - new Size(1, 1));
+        e.Graphics.DrawRectangle(borderPen, border);
+    }
+
+    protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+    {
+        e.TextColor = ThemeEditor.ButtonsForeground;
+        base.OnRenderItemText(e);
+    }
+
+    protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+    {
+        Rectangle bounds = new Rectangle(Point.Empty, e.Item.Size);
+        Color fill = e.Item.Selected ? ThemeEditor.ButtonsBackground.Lerp(ThemeEditor.ButtonsBorder, 0.3f) : ThemeEditor.FormsBackground.Lerp(ThemeEditor.ButtonsBackground, 0.5f);
+
+        using GraphicsPath path = CreateRoundRect(bounds, 6);
+        using SolidBrush brush = new SolidBrush(fill);
+        using Pen borderPen = new Pen(ThemeEditor.ButtonsBorder);
+
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        e.Graphics.FillPath(brush, path);
+        e.Graphics.DrawPath(borderPen, path);
+    }
+
+    private static GraphicsPath CreateRoundRect(Rectangle bounds, int radius)
+    {
+        int diameter = radius * 2;
+        Rectangle arc = new Rectangle(bounds.Location, new Size(diameter, diameter));
+        GraphicsPath path = new GraphicsPath();
+
+        path.AddArc(arc, 180, 90);
+        arc.X = bounds.Right - diameter;
+        path.AddArc(arc, 270, 90);
+        arc.Y = bounds.Bottom - diameter;
+        path.AddArc(arc, 0, 90);
+        arc.X = bounds.Left;
+        path.AddArc(arc, 90, 90);
+        path.CloseFigure();
+
+        return path;
+    }
+}
+
+internal sealed class ThemedColorTable : ProfessionalColorTable
+{
+    public ThemedColorTable() => UseSystemColors = false;
+
+    public override Color MenuBorder => ThemeEditor.ButtonsBorder;
+    public override Color MenuItemBorder => ThemeEditor.ButtonsBorder;
+    public override Color MenuItemSelected => ThemeEditor.ButtonsBackground.Lerp(ThemeEditor.ButtonsBorder, 0.3f);
+    public override Color MenuItemSelectedGradientBegin => MenuItemSelected;
+    public override Color MenuItemSelectedGradientEnd => MenuItemSelected;
+    public override Color MenuItemPressedGradientBegin => ThemeEditor.ButtonsBackground;
+    public override Color MenuItemPressedGradientMiddle => ThemeEditor.ButtonsBackground;
+    public override Color MenuItemPressedGradientEnd => ThemeEditor.ButtonsBackground;
+    public override Color ToolStripDropDownBackground => ThemeEditor.FormsBackground.Lerp(ThemeEditor.ButtonsBackground, 0.5f);
+    public override Color ImageMarginGradientBegin => ToolStripDropDownBackground;
+    public override Color ImageMarginGradientMiddle => ToolStripDropDownBackground;
+    public override Color ImageMarginGradientEnd => ToolStripDropDownBackground;
+    public override Color SeparatorDark => ThemeEditor.ButtonsBorder;
+    public override Color SeparatorLight => ThemeEditor.ButtonsBackground.Lerp(Color.White, 0.08f);
 }
