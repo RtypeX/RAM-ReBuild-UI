@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useState } from 'react'
+import { startTransition, useEffect, useMemo, useState, type CSSProperties } from 'react'
 
 type AccountRow = {
   username: string
@@ -40,6 +40,7 @@ type SearchGame = {
 
 type ServerEntry = {
   id: string
+  placeId: number
   playing: number
   maxPlayers: number
   ping: number
@@ -128,36 +129,71 @@ type ViewKey =
   | 'Settings'
   | 'Debug'
 type EditorState = { alias: string; description: string; group: string }
+type ThemeState = Record<string, string>
 
-const views: ViewKey[] = [
-  'Dashboard',
-  'Accounts',
-  'Avatar',
-  'Missing Assets',
-  'Control',
-  'Server Browser',
-  'Browser Actions',
-  'Recent Games',
-  'Utilities',
-  'Settings',
-  'Debug',
+const navSections: Array<{ label: string; views: ViewKey[] }> = [
+  { label: 'Operate', views: ['Dashboard', 'Accounts', 'Browser Actions', 'Server Browser'] },
+  { label: 'Customize', views: ['Avatar', 'Missing Assets', 'Recent Games', 'Utilities'] },
+  { label: 'Systems', views: ['Control', 'Settings', 'Debug'] },
 ]
+const viewDescriptions: Record<ViewKey, string> = {
+  Dashboard: 'Launch flow, live account scope, and the current operating surface.',
+  Accounts: 'Real stored accounts, import paths, clipboard tools, and field editing.',
+  Avatar: 'Outfit lookup, avatar JSON copy, and direct avatar application.',
+  'Missing Assets': 'Asset inspection and purchase flow tied to the selected account.',
+  Control: 'Executor control, Nexus links, relaunch settings, and transport state.',
+  'Server Browser': 'Public server scanning, VIP saves, favorites, and direct join tools.',
+  'Browser Actions': 'Logged-in Chromium actions, custom URLs, scripts, and browser launch modes.',
+  'Recent Games': 'Saved places, favorites, and quick relaunch history.',
+  Utilities: 'Account-level tools, diagnostics, follow privacy, logout, and cookie helpers.',
+  Settings: 'Legacy settings, theme, web API, and local runtime behavior.',
+  Debug: 'Renderer traces, action attempts, and backend instrumentation.',
+}
 const generalToggleSettings = [
   ['CheckForUpdates', 'Check for updates'],
   ['AsyncJoin', 'Async launching'],
+  ['AutoCookieRefresh', 'Auto refresh cookies'],
   ['EnableMultiRbx', 'Enable multi Roblox'],
   ['ShowPresence', 'Show presence'],
+  ['UnlockFPS', 'Unlock FPS'],
   ['SavePasswords', 'Save passwords'],
+  ['DisableAgingAlert', 'Disable aging alert'],
+  ['HideRbxAlert', 'Hide multi Roblox alert'],
   ['DisableImages', 'Disable images'],
   ['ShuffleChoosesLowestServer', 'Shuffle lowest server'],
+  ['StartOnPCStartup', 'Run on Windows startup'],
 ] as const
 const webserverToggleSettings = [
   ['EnableWebServer', 'Enable web server', 'Developer'],
+  ['AllowGetCookie', 'Allow cookie reads', 'WebServer'],
   ['AllowGetAccounts', 'Allow account reads', 'WebServer'],
   ['AllowLaunchAccount', 'Allow launching', 'WebServer'],
   ['AllowAccountEditing', 'Allow account edits', 'WebServer'],
   ['AllowExternalConnections', 'Allow external connections', 'WebServer'],
   ['EveryRequestRequiresPassword', 'Require password', 'WebServer'],
+] as const
+const themeColorSettings = [
+  ['FormsBG', 'App background'],
+  ['FormsFG', 'App text'],
+  ['AccountsBG', 'Panel fill'],
+  ['AccountsFG', 'Panel text'],
+  ['ButtonsBG', 'Button fill'],
+  ['ButtonsFG', 'Button text'],
+  ['ButtonsBC', 'Button border'],
+  ['TextBoxesBG', 'Input fill'],
+  ['TextBoxesFG', 'Input text'],
+  ['TextBoxesBC', 'Input border'],
+  ['LabelsBC', 'Label surface'],
+  ['LabelsFC', 'Label text'],
+] as const
+const themeToggleSettings = [
+  ['DarkTopBar', 'Dark navigation rail'],
+  ['ShowHeaders', 'Show section kickers'],
+  ['LabelsTransparent', 'Transparent labels'],
+  ['LightImages', 'Brighten loaded images'],
+] as const
+const themeSelectSettings = [
+  ['ButtonStyle', ['Flat', 'Standard']],
 ] as const
 const emptyEditor = { alias: '', description: '', group: 'Default' }
 
@@ -173,6 +209,7 @@ export default function App() {
   const [controlledAccounts, setControlledAccounts] = useState<ControlledAccountEntry[]>([])
   const [dynamicElements, setDynamicElements] = useState<DynamicControlElement[]>([])
   const [settings, setSettings] = useState<Record<string, Record<string, string>>>({})
+  const [theme, setTheme] = useState<ThemeState>({})
   const [nexusSettings, setNexusSettings] = useState<NexusSettingsState>({
     allowExternalConnections: false,
     nexusPort: 5242,
@@ -200,13 +237,19 @@ export default function App() {
   const [placeId, setPlaceId] = useState('')
   const [jobId, setJobId] = useState('')
   const [followUser, setFollowUser] = useState(false)
+  const [followUserId, setFollowUserId] = useState('')
   const [joinVip, setJoinVip] = useState(false)
+  const [useOldJoin, setUseOldJoin] = useState(false)
+  const [isTeleport, setIsTeleport] = useState(false)
+  const [currentVersionOverride, setCurrentVersionOverride] = useState('')
   const [browserTarget, setBrowserTarget] = useState('https://www.roblox.com/home')
   const [browserScript, setBrowserScript] = useState('')
+  const [browserMode, setBrowserMode] = useState<'standard' | 'groupJoin'>('standard')
   const [gameSearchTerm, setGameSearchTerm] = useState('')
   const [gameSearchPage, setGameSearchPage] = useState('0')
   const [serverLookupUsername, setServerLookupUsername] = useState('')
   const [avatarUsername, setAvatarUsername] = useState('')
+  const [avatarJsonInput, setAvatarJsonInput] = useState('')
   const [assetInput, setAssetInput] = useState('')
   const [controlCommandName, setControlCommandName] = useState('Command')
   const [controlCommandPayload, setControlCommandPayload] = useState('')
@@ -229,6 +272,7 @@ export default function App() {
   const [quickLoginCode, setQuickLoginCode] = useState('')
   const [followPrivacy, setFollowPrivacy] = useState('0')
   const [utilityOutput, setUtilityOutput] = useState('')
+  const [showAccountGroups, setShowAccountGroups] = useState(true)
 
   const selectedRows = useMemo(
     () => accounts.filter((account) => selectedAccounts.includes(account.username)),
@@ -240,6 +284,30 @@ export default function App() {
   const developer = settings.Developer ?? {}
   const webServer = settings.WebServer ?? {}
   const bridge = typeof window !== 'undefined' ? window.desktopBridge : undefined
+  const activeViewDescription = viewDescriptions[activeView]
+  const themeStyle = useMemo(
+    () =>
+      ({
+        '--theme-accounts-bg': theme.AccountsBG ?? '#162033',
+        '--theme-accounts-fg': theme.AccountsFG ?? '#F8FAFC',
+        '--theme-buttons-bg': theme.ButtonsBG ?? '#1D2B44',
+        '--theme-buttons-fg': theme.ButtonsFG ?? '#F8FAFC',
+        '--theme-buttons-bc': theme.ButtonsBC ?? '#4F6B95',
+        '--theme-forms-bg': theme.FormsBG ?? '#0B1220',
+        '--theme-forms-fg': theme.FormsFG ?? '#F8FAFC',
+        '--theme-textboxes-bg': theme.TextBoxesBG ?? '#111A2B',
+        '--theme-textboxes-fg': theme.TextBoxesFG ?? '#F8FAFC',
+        '--theme-textboxes-bc': theme.TextBoxesBC ?? '#38506F',
+        '--theme-labels-bc': theme.LabelsBC ?? '#162033',
+        '--theme-labels-fc': theme.LabelsFC ?? '#D6E2F3',
+      }) as CSSProperties,
+    [theme],
+  )
+  const showHeaders = String(theme.ShowHeaders ?? 'True').toLowerCase() !== 'false'
+  const labelsTransparent = String(theme.LabelsTransparent ?? 'True').toLowerCase() === 'true'
+  const lightImages = String(theme.LightImages ?? 'True').toLowerCase() === 'true'
+  const darkTopBar = String(theme.DarkTopBar ?? 'True').toLowerCase() !== 'false'
+  const buttonStyle = String(theme.ButtonStyle ?? 'Flat')
 
   function addDebug(message: string, details?: unknown) {
     const line = `${new Date().toLocaleTimeString()} ${message}${details !== undefined ? ` ${JSON.stringify(details)}` : ''}`
@@ -328,6 +396,7 @@ export default function App() {
     accountsLocked: boolean
     accountSource: string
     settings: Record<string, Record<string, string>>
+    theme: ThemeState
     recentGames: RecentGame[]
     favoriteGames: FavoriteGame[]
   }) {
@@ -335,6 +404,7 @@ export default function App() {
     setRecentGames(state.recentGames)
     setFavoriteGames(state.favoriteGames)
     setSettings(state.settings)
+    setTheme(state.theme)
     setAccountsLocked(state.accountsLocked)
     setAccountSource(state.accountSource)
 
@@ -347,6 +417,10 @@ export default function App() {
 
     if (!placeId) {
       setPlaceId(String(state.recentGames[0]?.placeId ?? state.settings.General?.SavedPlaceId ?? ''))
+    }
+
+    if (!followUserId) {
+      setFollowUserId(String(state.settings.General?.SavedFollowUser ?? ''))
     }
 
     if (!avatarUsername && state.accounts[0]?.username) {
@@ -453,6 +527,76 @@ export default function App() {
         [key]: value,
       },
     }))
+  }
+
+  async function pickCustomClientSettings() {
+    addDebug('pickCustomClientSettings.click')
+    if (!bridge) {
+      setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    try {
+      const result = await bridge.pickCustomClientSettings()
+      setSettings(result.settings)
+      setToast(result.message)
+    } catch (error) {
+      addDebug('pickCustomClientSettings.error', error instanceof Error ? error.message : String(error))
+      setToast(error instanceof Error ? error.message : 'Failed to select custom client settings.')
+    }
+  }
+
+  async function clearCustomClientSettings() {
+    addDebug('clearCustomClientSettings.click')
+    if (!bridge) {
+      setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    try {
+      const result = await bridge.clearCustomClientSettings()
+      setSettings(result.settings)
+      setToast(result.message)
+    } catch (error) {
+      addDebug('clearCustomClientSettings.error', error instanceof Error ? error.message : String(error))
+      setToast(error instanceof Error ? error.message : 'Failed to clear custom client settings.')
+    }
+  }
+
+  async function openReleasePage() {
+    addDebug('openReleasePage.click')
+    if (!bridge) {
+      setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    try {
+      const result = await bridge.openReleasePage()
+      setToast(result.message)
+    } catch (error) {
+      addDebug('openReleasePage.error', error instanceof Error ? error.message : String(error))
+      setToast(error instanceof Error ? error.message : 'Failed to open the release page.')
+    }
+  }
+
+  async function saveThemePatch(patch: Record<string, string>, label: string) {
+    addDebug('saveThemePatch.click', { label, patch })
+    if (!bridge) {
+      setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    try {
+      const next = await bridge.saveTheme({
+        ...theme,
+        ...patch,
+      })
+      setTheme(next)
+      setToast(`${label} saved.`)
+    } catch (error) {
+      addDebug('saveThemePatch.error', error instanceof Error ? error.message : String(error))
+      setToast(error instanceof Error ? error.message : 'Failed to save theme.')
+    }
   }
 
   async function saveAccountDetails() {
@@ -568,6 +712,105 @@ export default function App() {
     }
   }
 
+  async function sortAccountsAlphabetically() {
+    addDebug('sortAccounts.click', { count: accounts.length })
+    if (!bridge) {
+      setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    try {
+      const result = await runBusyTask('sort-accounts', () => bridge.sortAccounts())
+      applyAccountMutation(result)
+      setToast('Accounts sorted alphabetically.')
+    } catch (error) {
+      addDebug('sortAccounts.error', error instanceof Error ? error.message : String(error))
+      setToast(error instanceof Error ? error.message : 'Failed to sort accounts.')
+    }
+  }
+
+  async function saveLaunchPreset(clear = false) {
+    addDebug('saveLaunchPreset.click', { clear, count: selectedRows.length, placeId, jobId })
+    if (!bridge) {
+      setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    if (selectedRows.length === 0) {
+      setToast('Select at least one account first.')
+      return
+    }
+
+    try {
+      const result = await runBusyTask(clear ? 'clear-saved-launch' : 'save-saved-launch', () =>
+        bridge.saveLaunchForAccounts({
+          usernames: selectedRows.map((row) => row.username),
+          placeId,
+          jobId,
+          clear,
+        }),
+      )
+      applyAccountMutation(result)
+      setToast(clear ? 'Cleared saved launch fields for selected accounts.' : 'Saved launch fields to selected accounts.')
+    } catch (error) {
+      addDebug('saveLaunchPreset.error', error instanceof Error ? error.message : String(error))
+      setToast(error instanceof Error ? error.message : 'Failed to save launch preset.')
+    }
+  }
+
+  async function copyAccountData(
+    kind: 'username' | 'password' | 'combo' | 'userId' | 'securityToken' | 'profile' | 'group' | 'authTicket',
+  ) {
+    addDebug('copyAccountData.click', { kind, count: selectedRows.length })
+    if (!bridge) {
+      setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    if (selectedRows.length === 0) {
+      setToast('Select at least one account first.')
+      return
+    }
+
+    try {
+      const result = await runBusyTask(`copy-${kind}`, () =>
+        bridge.copyAccountData({
+          usernames: selectedRows.map((row) => row.username),
+          kind,
+        }),
+      )
+      setToast(result.message)
+    } catch (error) {
+      addDebug('copyAccountData.error', error instanceof Error ? error.message : String(error))
+      setToast(error instanceof Error ? error.message : 'Failed to copy account data.')
+    }
+  }
+
+  async function dumpSelectedAccounts() {
+    addDebug('dumpSelectedAccounts.click', { count: selectedRows.length })
+    if (!bridge) {
+      setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    if (selectedRows.length === 0) {
+      setToast('Select at least one account first.')
+      return
+    }
+
+    try {
+      const result = await runBusyTask('dump-accounts', () =>
+        bridge.dumpAccountDetails({
+          usernames: selectedRows.map((row) => row.username),
+        }),
+      )
+      setToast(result.message)
+    } catch (error) {
+      addDebug('dumpSelectedAccounts.error', error instanceof Error ? error.message : String(error))
+      setToast(error instanceof Error ? error.message : 'Failed to export account dumps.')
+    }
+  }
+
   async function importCookieAccount() {
     addDebug('importCookieAccount.click', { hasCookie: Boolean(cookieInput.trim()) })
     if (!bridge) {
@@ -670,9 +913,19 @@ export default function App() {
       return
     }
 
+    if (selectedRows.length === 0) {
+      setToast('Select at least one account first.')
+      return
+    }
+
     const targetPlaceId = String(nextPlaceId ?? placeId).trim()
-    if (!targetPlaceId) {
+    if (!followUser && !targetPlaceId) {
       setToast('Enter a place ID first.')
+      return
+    }
+
+    if (followUser && !followUserId.trim()) {
+      setToast('Enter the user ID to follow first.')
       return
     }
 
@@ -684,9 +937,16 @@ export default function App() {
           placeId: targetPlaceId,
           jobId,
           followUser,
+          followUserId,
           joinVip,
+          useOldJoin,
+          isTeleport,
+          currentVersion: currentVersionOverride.trim(),
         }),
       )
+      if (!result.ok) {
+        throw new Error(result.message)
+      }
       setToast(result.message)
     } catch (error) {
       addDebug('launchSelected.error', error instanceof Error ? error.message : String(error))
@@ -695,9 +955,20 @@ export default function App() {
   }
 
   async function runBrowserFlow() {
-    addDebug('runBrowserFlow.click', { count: selectedRows.length, url: browserTarget })
+    addDebug('runBrowserFlow.click', { count: selectedRows.length, url: browserTarget, browserMode })
     if (!bridge) {
       setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    if (selectedRows.length === 0) {
+      setToast('Select at least one account first.')
+      return
+    }
+
+    const targetUrl = browserTarget.trim()
+    if (!targetUrl) {
+      setToast('Enter a browser URL first.')
       return
     }
 
@@ -706,14 +977,65 @@ export default function App() {
         bridge.performAction({
           type: 'browser',
           accounts: selectedRows.map((row) => row.username),
-          url: browserTarget,
+          url: targetUrl,
           script: browserScript,
+          browserMode,
         }),
       )
+      if (!result.ok) {
+        throw new Error(result.message)
+      }
       setToast(result.message)
     } catch (error) {
       addDebug('runBrowserFlow.error', error instanceof Error ? error.message : String(error))
       setToast(error instanceof Error ? error.message : 'Failed to open browser windows.')
+    }
+  }
+
+  async function copyLaunchLink(type: 'copy-player-link' | 'copy-app-link') {
+    addDebug('copyLaunchLink.click', { type, count: selectedRows.length })
+    if (!bridge) {
+      setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    if (selectedRows.length === 0) {
+      setToast('Select at least one account first.')
+      return
+    }
+
+    if (type === 'copy-player-link' && followUser && !followUserId.trim()) {
+      setToast('Enter the user ID to follow first.')
+      return
+    }
+
+    if (type === 'copy-player-link' && !followUser && !String(placeId).trim()) {
+      setToast('Enter a place ID first.')
+      return
+    }
+
+    try {
+      const result = await runBusyTask(type, () =>
+        bridge.performAction({
+          type,
+          accounts: [selectedRows[0].username],
+          placeId,
+          jobId,
+          followUser,
+          followUserId,
+          joinVip,
+          useOldJoin,
+          isTeleport,
+          currentVersion: currentVersionOverride.trim(),
+        }),
+      )
+      if (!result.ok) {
+        throw new Error(result.message)
+      }
+      setToast(result.message)
+    } catch (error) {
+      addDebug('copyLaunchLink.error', error instanceof Error ? error.message : String(error))
+      setToast(error instanceof Error ? error.message : 'Failed to copy launch link.')
     }
   }
 
@@ -789,6 +1111,12 @@ export default function App() {
     addDebug('searchGameCatalog.click', { query: gameSearchTerm, page: gameSearchPage })
     if (!bridge) {
       setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    if (!gameSearchTerm.trim()) {
+      setSearchGames([])
+      setToast('Enter a game name or keyword first.')
       return
     }
 
@@ -942,7 +1270,8 @@ export default function App() {
   }
 
   async function launchServer(server: ServerEntry) {
-    addDebug('launchServer.click', { serverId: server.id, type: server.type, placeId })
+    const targetPlaceId = String(server.placeId || placeId).trim()
+    addDebug('launchServer.click', { serverId: server.id, type: server.type, placeId: targetPlaceId })
     if (!bridge) {
       setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
       return
@@ -953,7 +1282,7 @@ export default function App() {
       return
     }
 
-    if (!String(placeId).trim()) {
+    if (!targetPlaceId) {
       setToast('Enter a place ID first.')
       return
     }
@@ -963,12 +1292,16 @@ export default function App() {
         bridge.performAction({
           type: 'launch',
           accounts: selectedRows.map((row) => row.username),
-          placeId,
+          placeId: targetPlaceId,
           jobId: server.type === 'VIP' ? server.accessCode || server.id : server.id,
           followUser: false,
           joinVip: server.type === 'VIP',
         }),
       )
+      if (!result.ok) {
+        throw new Error(result.message)
+      }
+      setPlaceId(targetPlaceId)
       setToast(result.message)
     } catch (error) {
       addDebug('launchServer.error', error instanceof Error ? error.message : String(error))
@@ -1011,11 +1344,63 @@ export default function App() {
 
     try {
       const result = await runBusyTask(`outfit-json-${outfit.id}`, () => bridge.getOutfitDetails({ outfitId: outfit.id }))
-      await navigator.clipboard.writeText(result.json)
+      setAvatarJsonInput(result.json)
+      await bridge.copyText({ text: result.json, label: 'avatar JSON' })
       setToast(`Copied avatar JSON for ${outfit.name}.`)
     } catch (error) {
       addDebug('copyOutfitJson.error', error instanceof Error ? error.message : String(error))
       setToast(error instanceof Error ? error.message : 'Failed to copy outfit JSON.')
+    }
+  }
+
+  async function wearAvatarJson() {
+    addDebug('wearAvatarJson.click', { username: primaryAccount?.username, length: avatarJsonInput.length })
+    if (!bridge) {
+      setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    if (!primaryAccount) {
+      setToast('Select an account first.')
+      return
+    }
+
+    if (!avatarJsonInput.trim()) {
+      setToast('Paste avatar JSON first.')
+      return
+    }
+
+    try {
+      const result = await runBusyTask('wear-avatar-json', () =>
+        bridge.wearAvatarJson({
+          username: primaryAccount.username,
+          json: avatarJsonInput,
+        }),
+      )
+      setToast(
+        result.invalidAssetIds && result.invalidAssetIds.length > 0
+          ? `${result.message} Missing assets: ${result.invalidAssetIds.join(', ')}`
+          : result.message,
+      )
+    } catch (error) {
+      addDebug('wearAvatarJson.error', error instanceof Error ? error.message : String(error))
+      setToast(error instanceof Error ? error.message : 'Failed to wear avatar JSON.')
+    }
+  }
+
+  async function copyText(text: string, label: string) {
+    addDebug('copyText.click', { label })
+    if (!bridge) {
+      setToast('Desktop bridge is unavailable. Start this app through Electron, not a normal browser tab.')
+      return
+    }
+
+    try {
+      const result = await bridge.copyText({ text, label })
+      setToast(result.message)
+    } catch (error) {
+      addDebug('copyText.error', error instanceof Error ? error.message : String(error))
+      setToast(error instanceof Error ? error.message : `Failed to copy ${label}.`)
     }
   }
 
@@ -1344,25 +1729,44 @@ export default function App() {
     return (
       <>
         <header className="hero-card">
-          <div>
+          <div className="hero-copy-block">
             <p className="eyebrow">Modern Desktop Revival</p>
-            <h2>The React shell is driving real accounts now.</h2>
+            <h2>Run the old toolbox through a cleaner, sharper command deck.</h2>
             <p className="hero-copy">
-              Launches, logged-in browser windows, account edits, field updates, cookie imports, removals, and
-              settings changes all run against the actual legacy data files.
+              The revived client now drives real account files, real launch flows, real browser actions, Nexus control,
+              favorites, theme data, and the restored local API surface without falling back to the old WinForms shell.
             </p>
+            <div className="hero-ribbon">
+              <span>{accounts.length} accounts loaded</span>
+              <span>{selectedRows.length} selected</span>
+              <span>{favoriteGames.length} favorites saved</span>
+              <span>{developer.EnableWebServer === 'true' ? 'legacy API online' : 'legacy API idle'}</span>
+            </div>
           </div>
 
-          <div className="hero-actions">
-            <button className="button-primary" onClick={() => void launchSelected()} disabled={isBusy('launch')}>
-              {isBusy('launch') ? 'Launching...' : 'Launch Selected'}
-            </button>
-            <button className="button-secondary" onClick={() => setActiveView('Server Browser')}>
-              Server Browser
-            </button>
-            <button className="button-secondary" onClick={() => setActiveView('Browser Actions')}>
-              Browser Actions
-            </button>
+          <div className="hero-rail">
+            <div className="hero-spotlight">
+              <span className="hero-spotlight-label">Primary target</span>
+              <strong>{primaryAccount ? primaryAccount.alias || primaryAccount.username : 'No account selected'}</strong>
+              <p>{primaryAccount ? `User ID ${primaryAccount.userId}` : 'Select an account to launch, shop, or run utilities.'}</p>
+            </div>
+            <div className="hero-actions">
+              <button className="button-primary" onClick={() => void launchSelected()} disabled={isBusy('launch')}>
+                {isBusy('launch') ? 'Launching...' : 'Launch Selected'}
+              </button>
+              <button className="button-secondary" onClick={() => void copyLaunchLink('copy-player-link')} disabled={isBusy('copy-player-link')}>
+                Copy Player Link
+              </button>
+              <button className="button-secondary" onClick={() => void copyLaunchLink('copy-app-link')} disabled={isBusy('copy-app-link')}>
+                Copy App Link
+              </button>
+              <button className="button-secondary" onClick={() => setActiveView('Server Browser')}>
+                Server Browser
+              </button>
+              <button className="button-secondary" onClick={() => setActiveView('Browser Actions')}>
+                Browser Actions
+              </button>
+            </div>
           </div>
         </header>
 
@@ -1398,6 +1802,19 @@ export default function App() {
                 <span>Job ID or VIP access code</span>
                 <input value={jobId} onChange={(event) => setJobId(event.target.value)} placeholder="Optional" />
               </label>
+              {followUser ? (
+                <label className="field">
+                  <span>Follow user ID</span>
+                  <input value={followUserId} onChange={(event) => setFollowUserId(event.target.value)} placeholder="123456789" />
+                </label>
+              ) : (
+                <div className="field field-hint">
+                  <span>Launch mode</span>
+                  <p className="muted">
+                    Use Place ID for normal launches, Job ID for direct server joins, or enable VIP mode for access codes.
+                  </p>
+                </div>
+              )}
               <label className="check-row">
                 <input type="checkbox" checked={followUser} onChange={(event) => setFollowUser(event.target.checked)} />
                 <span>Follow user instead of joining a place</span>
@@ -1405,6 +1822,22 @@ export default function App() {
               <label className="check-row">
                 <input type="checkbox" checked={joinVip} onChange={(event) => setJoinVip(event.target.checked)} />
                 <span>Treat Job ID as a VIP access code</span>
+              </label>
+              <label className="check-row">
+                <input type="checkbox" checked={useOldJoin} onChange={(event) => setUseOldJoin(event.target.checked)} />
+                <span>Use old join executable path</span>
+              </label>
+              <label className="check-row">
+                <input type="checkbox" checked={isTeleport} onChange={(event) => setIsTeleport(event.target.checked)} />
+                <span>Mark this launch as teleport</span>
+              </label>
+              <label className="field">
+                <span>Current version override</span>
+                <input
+                  value={currentVersionOverride}
+                  onChange={(event) => setCurrentVersionOverride(event.target.value)}
+                  placeholder="version-xxxxxxxxxxxxxxxx"
+                />
               </label>
             </div>
           </article>
@@ -1479,6 +1912,13 @@ export default function App() {
               <button className="text-button" onClick={() => setSelectedAccounts([])}>
                 Clear
               </button>
+              <label className="check-row compact-check">
+                <input type="checkbox" checked={showAccountGroups} onChange={(event) => setShowAccountGroups(event.target.checked)} />
+                <span>Group view</span>
+              </label>
+              <button className="text-button" onClick={() => void sortAccountsAlphabetically()}>
+                Sort A-Z
+              </button>
               <button className="button-secondary" onClick={() => void loadState()}>
                 Refresh
               </button>
@@ -1488,7 +1928,12 @@ export default function App() {
             </div>
           </div>
 
-          <AccountTable accounts={accounts} selectedAccounts={selectedAccounts} toggleAccount={toggleAccount} />
+          <AccountTable
+            accounts={accounts}
+            selectedAccounts={selectedAccounts}
+            toggleAccount={toggleAccount}
+            showGroups={showAccountGroups}
+          />
         </article>
 
         <article className="surface">
@@ -1522,6 +1967,34 @@ export default function App() {
                   <button className="button-primary" onClick={() => void saveAccountDetails()} disabled={isBusy('save-account')}>
                     {isBusy('save-account') ? 'Saving...' : 'Save Details'}
                   </button>
+                </div>
+              </div>
+
+              <div className="surface-divider" />
+
+              <div className="surface-header compact">
+                <div>
+                  <p className="panel-kicker">Saved Launch</p>
+                  <h3>Per-account launch overrides</h3>
+                </div>
+              </div>
+
+              <div className="stack-list">
+                <div className="stack-item">
+                  <div>
+                    <strong>Saved place and job fields</strong>
+                    <p>
+                      SavedPlaceId: {primaryAccount.fields.SavedPlaceId || '(none)'} | SavedJobId: {primaryAccount.fields.SavedJobId || '(none)'}
+                    </p>
+                  </div>
+                  <div className="inline-actions">
+                    <button className="button-secondary" onClick={() => void saveLaunchPreset()}>
+                      Save Current Launch
+                    </button>
+                    <button className="text-button" onClick={() => void saveLaunchPreset(true)}>
+                      Clear Saved Launch
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1566,6 +2039,26 @@ export default function App() {
                     </div>
                   ))
                 )}
+              </div>
+
+              <div className="surface-divider" />
+
+              <div className="surface-header compact">
+                <div>
+                  <p className="panel-kicker">Clipboard + Dumps</p>
+                  <h3>Legacy account actions</h3>
+                </div>
+              </div>
+              <div className="inline-actions">
+                <button className="text-button" onClick={() => void copyAccountData('username')}>Copy Usernames</button>
+                <button className="text-button" onClick={() => void copyAccountData('password')}>Copy Passwords</button>
+                <button className="text-button" onClick={() => void copyAccountData('combo')}>Copy Combos</button>
+                <button className="text-button" onClick={() => void copyAccountData('userId')}>Copy User IDs</button>
+                <button className="text-button" onClick={() => void copyAccountData('securityToken')}>Copy Cookies</button>
+                <button className="text-button" onClick={() => void copyAccountData('profile')}>Copy Profiles</button>
+                <button className="text-button" onClick={() => void copyAccountData('group')}>Copy Groups</button>
+                <button className="text-button" onClick={() => void copyAccountData('authTicket')}>Copy Auth Tickets</button>
+                <button className="button-secondary" onClick={() => void dumpSelectedAccounts()}>Export Account Dumps</button>
               </div>
             </>
           ) : (
@@ -1710,6 +2203,12 @@ export default function App() {
                     <button className="text-button" onClick={() => setJobId(server.type === 'VIP' ? server.accessCode || server.id : server.id)}>
                       Copy to Launch
                     </button>
+                    <button className="text-button" onClick={() => void copyText(server.type === 'VIP' ? server.accessCode || server.id : server.id, 'job ID')}>
+                      Copy Job ID
+                    </button>
+                    <button className="text-button" onClick={() => void copyText(String(server.placeId || placeId), 'place ID')}>
+                      Copy Place ID
+                    </button>
                     <button className="button-secondary" onClick={() => void launchServer(server)}>
                       Join Server
                     </button>
@@ -1837,6 +2336,7 @@ export default function App() {
                         favorite.privateServer
                           ? void launchServer({
                               id: favorite.privateServer,
+                              placeId: favorite.placeId,
                               playing: 0,
                               maxPlayers: 0,
                               ping: 0,
@@ -1892,6 +2392,35 @@ export default function App() {
             <p className="muted">
               Wearing an outfit uses the primary selected account. Copying avatar JSON works even if no account is selected.
             </p>
+          </div>
+
+          <div className="surface-divider" />
+
+          <div className="surface-header compact">
+            <div>
+              <p className="panel-kicker">Manual Avatar JSON</p>
+              <h3>Paste avatar data and apply it directly</h3>
+            </div>
+          </div>
+
+          <div className="form-grid">
+            <label className="field">
+              <span>Avatar JSON</span>
+              <textarea
+                rows={10}
+                value={avatarJsonInput}
+                onChange={(event) => setAvatarJsonInput(event.target.value)}
+                placeholder='{"assets":[],"bodyColors":{},"scales":{}}'
+              />
+            </label>
+            <div className="inline-actions">
+              <button className="button-primary" onClick={() => void wearAvatarJson()} disabled={isBusy('wear-avatar-json')}>
+                {isBusy('wear-avatar-json') ? 'Applying...' : 'Wear Avatar JSON'}
+              </button>
+              <button className="button-secondary" onClick={() => setAvatarJsonInput('')}>
+                Clear JSON
+              </button>
+            </div>
           </div>
 
           <div className="card-grid">
@@ -2360,6 +2889,14 @@ export default function App() {
             </label>
 
             <label className="field">
+              <span>Browser mode</span>
+              <select className="select-input" value={browserMode} onChange={(event) => setBrowserMode(event.target.value as 'standard' | 'groupJoin')}>
+                <option value="standard">Standard logged-in browser</option>
+                <option value="groupJoin">Auto-join Roblox group</option>
+              </select>
+            </label>
+
+            <label className="field">
               <span>Optional script</span>
               <textarea
                 rows={8}
@@ -2368,6 +2905,12 @@ export default function App() {
                 placeholder="Executed after the page loads in each logged-in browser window."
               />
             </label>
+
+            {browserMode === 'groupJoin' ? (
+              <p className="warning-text">
+                Group-join mode will keep trying to click the Roblox group join button for a few seconds after the page loads.
+              </p>
+            ) : null}
 
             <div className="inline-actions">
               <button className="button-primary" onClick={() => void runBrowserFlow()} disabled={isBusy('browser')}>
@@ -2637,6 +3180,182 @@ export default function App() {
               />
             </label>
           </div>
+          <div className="field-row">
+            <label className="field">
+              <span>Presence update rate</span>
+              <input
+                value={general.PresenceUpdateRate ?? ''}
+                onChange={(event) => setSettings((current) => ({ ...current, General: { ...current.General, PresenceUpdateRate: event.target.value } }))}
+                onBlur={(event) => void persistSetting('General', 'PresenceUpdateRate', event.target.value, 'Presence update rate')}
+              />
+            </label>
+            <label className="field">
+              <span>Max FPS value</span>
+              <input
+                value={general.MaxFPSValue ?? ''}
+                onChange={(event) => setSettings((current) => ({ ...current, General: { ...current.General, MaxFPSValue: event.target.value } }))}
+                onBlur={(event) => void persistSetting('General', 'MaxFPSValue', event.target.value, 'Max FPS value')}
+              />
+            </label>
+          </div>
+          <div className="field-row">
+            <label className="field">
+              <span>Server region format</span>
+              <input
+                value={general.ServerRegionFormat ?? ''}
+                onChange={(event) => setSettings((current) => ({ ...current, General: { ...current.General, ServerRegionFormat: event.target.value } }))}
+                onBlur={(event) => void persistSetting('General', 'ServerRegionFormat', event.target.value, 'Server region format')}
+              />
+            </label>
+            <label className="field">
+              <span>Shuffle page count</span>
+              <input
+                value={general.ShufflePageCount ?? ''}
+                onChange={(event) => setSettings((current) => ({ ...current, General: { ...current.General, ShufflePageCount: event.target.value } }))}
+                onBlur={(event) => void persistSetting('General', 'ShufflePageCount', event.target.value, 'Shuffle page count')}
+              />
+            </label>
+          </div>
+          <label className="field">
+            <span>IP API format URL</span>
+            <input
+              value={general.IPApiLink ?? ''}
+              onChange={(event) => setSettings((current) => ({ ...current, General: { ...current.General, IPApiLink: event.target.value } }))}
+              onBlur={(event) => void persistSetting('General', 'IPApiLink', event.target.value, 'IP API URL')}
+            />
+          </label>
+        </article>
+
+        <article className="surface">
+          <div className="surface-header">
+            <div>
+              <p className="panel-kicker">Runtime</p>
+              <h3>Client behavior and maintenance</h3>
+            </div>
+          </div>
+          <div className="stack-list">
+            <div className="stack-item">
+              <div>
+                <strong>Custom ClientAppSettings.json</strong>
+                <p>{general.CustomClientSettings ?? 'No override file is active.'}</p>
+              </div>
+              <div className="inline-actions">
+                <button className="button-secondary" onClick={() => void pickCustomClientSettings()}>
+                  Select JSON
+                </button>
+                <button className="text-button" onClick={() => void clearCustomClientSettings()}>
+                  Clear Override
+                </button>
+              </div>
+            </div>
+            <div className="stack-item">
+              <div>
+                <strong>Update tools</strong>
+                <p>Open the latest public release page if you need the legacy updater path or want to compare builds.</p>
+              </div>
+              <div className="inline-actions">
+                <button className="button-secondary" onClick={() => void openReleasePage()}>
+                  Open Release Page
+                </button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article className="surface surface-wide">
+          <div className="surface-header">
+            <div>
+              <p className="panel-kicker">Theme</p>
+              <h3>Legacy palette and shell styling</h3>
+            </div>
+          </div>
+
+          <div className="field-row">
+            {themeColorSettings.map(([key, label]) => (
+              <label key={key} className="field">
+                <span>{label}</span>
+                <div className="color-input-row">
+                  <input
+                    className="color-input"
+                    type="color"
+                    value={theme[key] ?? '#000000'}
+                    onChange={(event) => {
+                      const nextValue = event.target.value
+                      setTheme((current) => ({ ...current, [key]: nextValue }))
+                      void saveThemePatch({ [key]: nextValue }, label)
+                    }}
+                  />
+                  <input
+                    value={theme[key] ?? ''}
+                    onChange={(event) => setTheme((current) => ({ ...current, [key]: event.target.value }))}
+                    onBlur={(event) => void saveThemePatch({ [key]: event.target.value }, label)}
+                  />
+                </div>
+              </label>
+            ))}
+          </div>
+
+          <div className="settings-list">
+            {themeToggleSettings.map(([key, label]) => {
+              const enabled = String(theme[key] ?? 'True').toLowerCase() === 'true'
+              return (
+                <label key={key} className="toggle-row">
+                  <span>{label}</span>
+                  <input
+                    className="toggle-input"
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(event) => {
+                      const nextValue = event.target.checked ? 'True' : 'False'
+                      setTheme((current) => ({ ...current, [key]: nextValue }))
+                      void saveThemePatch({ [key]: nextValue }, label)
+                    }}
+                  />
+                </label>
+              )
+            })}
+          </div>
+
+          <div className="field-row">
+            {themeSelectSettings.map(([key, options]) => (
+              <label key={key} className="field">
+                <span>{key}</span>
+                <select
+                  className="select-input"
+                  value={theme[key] ?? options[0]}
+                  onChange={(event) => {
+                    const nextValue = event.target.value
+                    setTheme((current) => ({ ...current, [key]: nextValue }))
+                    void saveThemePatch({ [key]: nextValue }, key)
+                  }}
+                >
+                  {options.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ))}
+          </div>
+
+          <div className="preview-panel theme-preview-panel">
+            <strong>Live Preview</strong>
+            <p className="muted">
+              Theme edits apply to the modern shell immediately and also save back to <code>RAMTheme.ini</code>.
+            </p>
+            <div className="chip-list">
+              <button className="button-primary" type="button">
+                Primary
+              </button>
+              <button className="button-secondary" type="button">
+                Secondary
+              </button>
+              <button className="text-button" type="button">
+                Text Button
+              </button>
+            </div>
+          </div>
         </article>
 
         <article className="surface">
@@ -2685,6 +3404,17 @@ export default function App() {
                 onBlur={(event) => void persistSetting('WebServer', 'WebServerPort', event.target.value, 'Web server port')}
               />
             </label>
+          </div>
+          <div className="preview-panel">
+            <strong>Legacy API status</strong>
+            <p className="muted">
+              {developer.EnableWebServer === 'true'
+                ? `The legacy HTTP API should listen on http://${webServer.AllowExternalConnections === 'true' ? '0.0.0.0' : '127.0.0.1'}:${webServer.WebServerPort ?? '7963'}/`
+                : 'Enable Web Server to expose the old local API endpoints again.'}
+            </p>
+            <p className="muted">
+              Supported routes include <code>/Running</code>, <code>/GetAccounts</code>, <code>/GetAccountsJson</code>, <code>/ImportCookie</code>, <code>/LaunchAccount</code>, <code>/FollowUser</code>, <code>/GetCookie</code>, and the legacy account-editing routes.
+            </p>
           </div>
         </article>
       </section>
@@ -2768,7 +3498,12 @@ export default function App() {
   }
 
   return (
-    <div className="shell">
+    <div
+      className={`shell ${showHeaders ? '' : 'shell-hide-headers'} ${labelsTransparent ? 'shell-transparent-labels' : ''} ${
+        lightImages ? 'shell-light-images' : ''
+      } ${darkTopBar ? 'shell-dark-topbar' : 'shell-light-topbar'} ${buttonStyle === 'Standard' ? 'shell-standard-buttons' : ''}`}
+      style={themeStyle}
+    >
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">RAM</div>
@@ -2778,18 +3513,32 @@ export default function App() {
           </div>
         </div>
 
+        <section className="sidebar-intro">
+          <p className="sidebar-intro-title">Operations deck</p>
+          <p className="sidebar-intro-copy">
+            Real Roblox account management, browser control, outfit tools, server scanning, and Nexus orchestration in one workspace.
+          </p>
+        </section>
+
         <nav className="nav">
-          {views.map((view) => (
-            <button
-              key={view}
-              className={`nav-item ${activeView === view ? 'nav-item-active' : ''}`}
-              onClick={() => {
-                addDebug('nav.click', { view })
-                setActiveView(view)
-              }}
-            >
-              {view}
-            </button>
+          {navSections.map((section) => (
+            <div key={section.label} className="nav-section">
+              <p className="nav-section-title">{section.label}</p>
+              <div className="nav-section-list">
+                {section.views.map((view) => (
+                  <button
+                    key={view}
+                    className={`nav-item ${activeView === view ? 'nav-item-active' : ''}`}
+                    onClick={() => {
+                      addDebug('nav.click', { view })
+                      setActiveView(view)
+                    }}
+                  >
+                    {view}
+                  </button>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
 
@@ -2804,6 +3553,27 @@ export default function App() {
       </aside>
 
       <main className="main">
+        <header className="workspace-header">
+          <div>
+            <p className="workspace-eyebrow">Workspace</p>
+            <h2>{activeView}</h2>
+            <p className="workspace-copy">{activeViewDescription}</p>
+          </div>
+          <div className="workspace-meta">
+            <div className="workspace-pill">
+              <span>Selection</span>
+              <strong>{selectedRows.length || 0}</strong>
+            </div>
+            <div className="workspace-pill">
+              <span>Primary</span>
+              <strong>{primaryAccount ? primaryAccount.alias || primaryAccount.username : 'None'}</strong>
+            </div>
+            <div className="workspace-pill workspace-pill-wide">
+              <span>Status</span>
+              <strong>{toast}</strong>
+            </div>
+          </div>
+        </header>
         {activeView === 'Dashboard' && renderDashboard()}
         {activeView === 'Accounts' && renderAccounts()}
         {activeView === 'Avatar' && renderAvatar()}
@@ -2824,14 +3594,27 @@ function AccountTable({
   accounts,
   selectedAccounts,
   toggleAccount,
+  showGroups,
 }: {
   accounts: AccountRow[]
   selectedAccounts: string[]
   toggleAccount: (name: string) => void
+  showGroups: boolean
 }) {
   if (accounts.length === 0) {
     return <p className="muted">No accounts loaded from the legacy store.</p>
   }
+
+  const groupedAccounts: Array<[string, AccountRow[]]> = showGroups
+    ? Object.entries(
+        accounts.reduce<Record<string, AccountRow[]>>((groups, account) => {
+          const key = account.group || 'Default'
+          groups[key] = groups[key] ?? []
+          groups[key].push(account)
+          return groups
+        }, {}),
+      )
+    : [['All Accounts', accounts]]
 
   return (
     <div className="table">
@@ -2843,19 +3626,24 @@ function AccountTable({
         <span>User ID</span>
         <span>Context</span>
       </div>
-      {accounts.map((account) => (
-        <button
-          key={account.username}
-          className={`table-row table-row-wide table-button ${selectedAccounts.includes(account.username) ? 'table-row-active' : ''}`}
-          onClick={() => toggleAccount(account.username)}
-        >
-          <span className="checkbox-dot">{selectedAccounts.includes(account.username) ? '●' : '○'}</span>
-          <span className="account-name">{account.alias || account.username}</span>
-          <span>{account.group}</span>
-          <span>{account.lastUse ? new Date(account.lastUse).toLocaleString() : 'Never'}</span>
-          <span>{account.userId}</span>
-          <span>{account.description || (account.hasSecurityToken ? 'Cookie loaded' : 'No token')}</span>
-        </button>
+      {groupedAccounts.map(([groupName, rows]) => (
+        <div key={groupName} className="table-group">
+          {showGroups && <div className="table-group-title">{groupName}</div>}
+          {rows.map((account) => (
+            <button
+              key={account.username}
+              className={`table-row table-row-wide table-button ${selectedAccounts.includes(account.username) ? 'table-row-active' : ''}`}
+              onClick={() => toggleAccount(account.username)}
+            >
+              <span className="checkbox-dot">{selectedAccounts.includes(account.username) ? '●' : '○'}</span>
+              <span className="account-name">{account.alias || account.username}</span>
+              <span>{account.group}</span>
+              <span>{account.lastUse ? new Date(account.lastUse).toLocaleString() : 'Never'}</span>
+              <span>{account.userId}</span>
+              <span>{account.description || (account.hasSecurityToken ? 'Cookie loaded' : 'No token')}</span>
+            </button>
+          ))}
+        </div>
       ))}
     </div>
   )

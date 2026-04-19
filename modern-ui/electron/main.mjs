@@ -1,12 +1,13 @@
-import { app, BrowserWindow, ipcMain, shell, session } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, session } from 'electron'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash, randomInt, randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import sodium from 'libsodium-wrappers-sumo'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { WebSocketServer } from 'ws'
 
@@ -27,6 +28,7 @@ const entropy = [
 ]
 const saveFilePath = path.join(repoRoot, 'AccountData.json')
 const settingsFilePath = path.join(repoRoot, 'RAMSettings.ini')
+const themeFilePath = path.join(repoRoot, 'RAMTheme.ini')
 const recentGamesFilePath = path.join(repoRoot, 'RecentGames.json')
 const favoriteGamesFilePath = path.join(repoRoot, 'FavoriteGames.json')
 const accountControlFilePath = path.join(repoRoot, 'AccountControlData.json')
@@ -44,6 +46,18 @@ const nexusState = {
   clients: new Map(),
   logs: [],
   dynamicElements: [],
+}
+const legacyWebServerState = {
+  server: null,
+  host: '',
+  port: 0,
+}
+const multiRobloxState = {
+  helper: null,
+  enabled: false,
+  ready: false,
+  failed: false,
+  failureMessage: '',
 }
 const auxiliaryWindows = new Set()
 const nexusLoaderScript = `Nexus_Version = 104
@@ -384,10 +398,567 @@ function readSettings() {
   return parseIni(fs.readFileSync(settingsFilePath, 'utf8'))
 }
 
+function getDefaultTheme() {
+  return {
+    AccountsBG: '#162033',
+    AccountsFG: '#F8FAFC',
+    ButtonsBG: '#1D2B44',
+    ButtonsFG: '#F8FAFC',
+    ButtonsBC: '#4F6B95',
+    ButtonStyle: 'Flat',
+    FormsBG: '#0B1220',
+    FormsFG: '#F8FAFC',
+    DarkTopBar: 'True',
+    ShowHeaders: 'True',
+    TextBoxesBG: '#111A2B',
+    TextBoxesFG: '#F8FAFC',
+    TextBoxesBC: '#38506F',
+    LabelsBC: '#162033',
+    LabelsFC: '#D6E2F3',
+    LabelsTransparent: 'True',
+    LightImages: 'True',
+    ThemeVersion: '2',
+  }
+}
+
+function readTheme() {
+  const sectionName = 'RBX Alt Manager'
+  if (!fs.existsSync(themeFilePath)) {
+    return getDefaultTheme()
+  }
+
+  const parsed = parseIni(fs.readFileSync(themeFilePath, 'utf8'))
+  return {
+    ...getDefaultTheme(),
+    ...(parsed[sectionName] ?? {}),
+  }
+}
+
+function saveTheme(values) {
+  const sectionName = 'RBX Alt Manager'
+  const next = {
+    [sectionName]: {
+      ...getDefaultTheme(),
+      ...values,
+    },
+  }
+  fs.writeFileSync(themeFilePath, serializeIni(next), 'utf8')
+  return next[sectionName]
+}
+
+function copyTextToClipboard(text, label = 'Text') {
+  const value = String(text ?? '')
+  clipboard.writeText(value)
+  return {
+    ok: true,
+    message: `Copied ${label}.`,
+  }
+}
+
 function saveSetting(section, key, value) {
   const ini = readSettings()
   ini[section] = ini[section] ?? {}
   ini[section][key] = String(value)
+  fs.writeFileSync(settingsFilePath, serializeIni(ini), 'utf8')
+
+  if (section === 'General' && key === 'StartOnPCStartup') {
+    try {
+      app.setLoginItemSettings({
+        openAtLogin: String(value) === 'true',
+        path: process.execPath,
+        args: app.isPackaged ? [] : [path.join(repoRoot, 'modern-ui')],
+      })
+    } catch (error) {
+      writeDebugLog('settings.startup.error', { message: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  if (
+    (section === 'Developer' && key === 'EnableWebServer') ||
+    (section === 'WebServer' &&
+      ['AllowExternalConnections', 'WebServerPort', 'Password', 'EveryRequestRequiresPassword', 'AllowGetAccounts', 'AllowGetCookie', 'AllowLaunchAccount', 'AllowAccountEditing'].includes(key))
+  ) {
+    void syncLegacyWebServer().catch((error) =>
+      writeDebugLog('legacy-web.sync.error', { message: error instanceof Error ? error.message : String(error) }),
+    )
+  }
+
+  return ini
+}
+
+function getLegacyWebServerConfig() {
+  const settings = readSettings()
+  return {
+    enabled: settings.Developer?.EnableWebServer === 'true',
+    allowExternalConnections: settings.WebServer?.AllowExternalConnections === 'true',
+    port: Math.max(Number.parseInt(settings.WebServer?.WebServerPort ?? '7963', 10) || 7963, 1),
+    password: String(settings.WebServer?.Password ?? ''),
+    requirePassword: settings.WebServer?.EveryRequestRequiresPassword === 'true',
+    allowGetAccounts: settings.WebServer?.AllowGetAccounts === 'true',
+    allowGetCookie: settings.WebServer?.AllowGetCookie === 'true',
+    allowLaunchAccount: settings.WebServer?.AllowLaunchAccount === 'true',
+    allowAccountEditing: settings.WebServer?.AllowAccountEditing === 'true',
+  }
+}
+
+function resolveLegacyAccount(accountIdentifier) {
+  const value = String(accountIdentifier ?? '').trim()
+  if (!value) return null
+  return accountStoreState.rawAccounts.find((account) => account.Username === value || String(account.UserID ?? '') === value) ?? null
+}
+
+function legacyWebReply(response, body, { success = false, statusCode, rawBody = null, v2 = false } = {}) {
+  const finalStatus = statusCode ?? (success ? 200 : 400)
+  const output = v2 ? JSON.stringify({ Success: success, Message: body }) : String(rawBody ?? body ?? '')
+  response.statusCode = finalStatus
+  response.setHeader('Content-Type', v2 ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8')
+  response.end(output)
+}
+
+async function handleLegacyWebRequest(request, response) {
+  const url = new URL(request.url ?? '/', `http://${request.headers.host || '127.0.0.1'}`)
+  const pathname = url.pathname
+  const v2 = pathname.startsWith('/v2/')
+  const absolutePath = v2 ? pathname.slice(3) : pathname
+  const config = getLegacyWebServerConfig()
+  const remoteAddress = request.socket.remoteAddress ?? ''
+  const isLocal =
+    remoteAddress === '127.0.0.1' ||
+    remoteAddress === '::1' ||
+    remoteAddress === '::ffff:127.0.0.1' ||
+    remoteAddress === ''
+
+  if (!isLocal && !config.allowExternalConnections) {
+    return legacyWebReply(response, 'External connections are not allowed', {
+      success: false,
+      statusCode: 401,
+      rawBody: '',
+      v2,
+    })
+  }
+
+  if (absolutePath === '/favicon.ico') {
+    response.statusCode = 204
+    response.end()
+    return
+  }
+
+  if (absolutePath === '/Running') {
+    return legacyWebReply(response, 'Roblox Account Manager is running', {
+      success: true,
+      rawBody: 'true',
+      v2,
+    })
+  }
+
+  const body = await new Promise((resolve, reject) => {
+    let data = ''
+    request.setEncoding('utf8')
+    request.on('data', (chunk) => {
+      data += chunk
+      if (data.length > 5_000_000) {
+        reject(new Error('Request body too large.'))
+        request.destroy()
+      }
+    })
+    request.on('end', () => resolve(data))
+    request.on('error', reject)
+  })
+
+  const method = absolutePath.replace(/^\//, '')
+  const accountValue = url.searchParams.get('Account')
+  const password = url.searchParams.get('Password') ?? ''
+
+  if (config.requirePassword && (config.password.length < 6 || password !== config.password)) {
+    return legacyWebReply(response, 'Invalid Password, make sure your password contains 6 or more characters', {
+      success: false,
+      statusCode: 401,
+      rawBody: 'Invalid Password',
+      v2,
+    })
+  }
+
+  if (
+    ['GetCookie', 'GetAccounts', 'LaunchAccount', 'FollowUser'].includes(method) &&
+    ((config.password && config.password.length < 6) || (password && password !== config.password))
+  ) {
+    return legacyWebReply(response, 'Invalid Password, make sure your password contains 6 or more characters', {
+      success: false,
+      statusCode: 401,
+      rawBody: 'Invalid Password',
+      v2,
+    })
+  }
+
+  if (method === 'ImportCookie') {
+    const imported = await importCookieAccount(url.searchParams.get('Cookie') ?? '')
+    return legacyWebReply(response, imported ? 'Cookie successfully imported' : '[ImportCookie] An error was encountered importing the cookie', {
+      success: Boolean(imported),
+      rawBody: imported ? 'true' : 'false',
+      v2,
+    })
+  }
+
+  await ensureAccountStoreLoaded()
+
+  if (method === 'GetAccounts') {
+    if (!config.allowGetAccounts) {
+      return legacyWebReply(response, 'Method `GetAccounts` not allowed', { success: false, statusCode: 401, rawBody: 'Method not allowed', v2 })
+    }
+    const groupFilter = url.searchParams.get('Group')
+    const names = accountStoreState.rawAccounts
+      .filter((account) => !groupFilter || String(account.Group ?? 'Default') === groupFilter)
+      .map((account) => account.Username)
+    return legacyWebReply(response, names.join(','), {
+      success: true,
+      rawBody: names.join(','),
+      v2,
+    })
+  }
+
+  if (method === 'GetAccountsJson') {
+    if (!config.allowGetAccounts) {
+      return legacyWebReply(response, 'Method `GetAccountsJson` not allowed', { success: false, statusCode: 401, rawBody: 'Method not allowed', v2 })
+    }
+    const groupFilter = url.searchParams.get('Group')
+    const includeCookies =
+      config.password.length >= 6 &&
+      password !== config.password &&
+      url.searchParams.get('IncludeCookies') === 'true' &&
+      config.allowGetCookie
+
+    const objects = accountStoreState.rawAccounts
+      .filter((account) => !groupFilter || String(account.Group ?? 'Default') === groupFilter)
+      .map((account) => ({
+        Username: account.Username,
+        UserID: account.UserID ?? 0,
+        Alias: account._Alias ?? account.Alias ?? '',
+        Description: account._Description ?? account.Description ?? '',
+        Group: account.Group ?? 'Default',
+        CSRFToken: account.CSRFToken ?? '',
+        LastUsed: account.LastUse ?? null,
+        Cookie: includeCookies ? account.SecurityToken ?? null : null,
+        Fields: account.Fields ?? {},
+      }))
+
+    return legacyWebReply(response, JSON.stringify(objects), { success: true, v2 })
+  }
+
+  if (!accountValue) {
+    return legacyWebReply(response, 'Empty Account', { success: false, v2 })
+  }
+
+  const account = resolveLegacyAccount(accountValue)
+  if (!account) {
+    return legacyWebReply(response, "Invalid Account, the account's cookie may have expired and resulted in the account being logged out", {
+      success: false,
+      rawBody: 'Invalid Account',
+      v2,
+    })
+  }
+
+  let csrfToken = ''
+  try {
+    csrfToken = await getCsrfToken(account.SecurityToken)
+  } catch {
+    csrfToken = account.CSRFToken ?? ''
+  }
+
+  if (method === 'GetCookie') {
+    if (!config.allowGetCookie) {
+      return legacyWebReply(response, 'Method `GetCookie` not allowed', { success: false, statusCode: 401, rawBody: 'Method not allowed', v2 })
+    }
+    return legacyWebReply(response, account.SecurityToken ?? '', { success: true, v2 })
+  }
+
+  if (method === 'LaunchAccount') {
+    if (!config.allowLaunchAccount) {
+      return legacyWebReply(response, 'Method `LaunchAccount` not allowed', { success: false, statusCode: 401, rawBody: 'Method not allowed', v2 })
+    }
+    const placeId = Number(url.searchParams.get('PlaceId'))
+    if (!Number.isFinite(placeId) || placeId <= 0) {
+      return legacyWebReply(response, 'Invalid PlaceId provided', { success: false, rawBody: 'Invalid PlaceId', v2 })
+    }
+    await launchAccount(account, {
+      type: 'launch',
+      placeId,
+      jobId: url.searchParams.get('JobId') ?? '',
+      followUser: url.searchParams.get('FollowUser') === 'true',
+      joinVip: url.searchParams.get('JoinVIP') === 'true',
+    })
+    return legacyWebReply(response, `Launched ${accountValue} to ${placeId}`, { success: true, v2 })
+  }
+
+  if (method === 'FollowUser') {
+    if (!config.allowLaunchAccount) {
+      return legacyWebReply(response, 'Method `FollowUser` not allowed', { success: false, statusCode: 401, rawBody: 'Method not allowed', v2 })
+    }
+    const username = url.searchParams.get('Username') ?? ''
+    if (!username) {
+      return legacyWebReply(response, 'Invalid Username Parameter', { success: false, v2 })
+    }
+    const userId = await resolveUserId(username)
+    await launchAccount(account, {
+      type: 'launch',
+      placeId: 1,
+      jobId: '',
+      followUser: true,
+      followUserId: userId,
+      joinVip: false,
+    })
+    return legacyWebReply(response, `Joining ${username}'s game on ${accountValue}`, { success: true, v2 })
+  }
+
+  if (method === 'GetCSRFToken') return legacyWebReply(response, csrfToken, { success: true, v2 })
+  if (method === 'GetAlias') return legacyWebReply(response, account._Alias ?? account.Alias ?? '', { success: true, v2 })
+  if (method === 'GetDescription') return legacyWebReply(response, account._Description ?? account.Description ?? '', { success: true, v2 })
+  if (method === 'GetField' && url.searchParams.get('Field')) {
+    return legacyWebReply(response, String(account.Fields?.[url.searchParams.get('Field')] ?? ''), { success: true, v2 })
+  }
+
+  if (method === 'SetField' && url.searchParams.get('Field') && url.searchParams.get('Value')) {
+    if (!config.allowAccountEditing) {
+      return legacyWebReply(response, 'Method `SetField` not allowed', { success: false, statusCode: 401, rawBody: 'Method not allowed', v2 })
+    }
+    const field = url.searchParams.get('Field')
+    const value = url.searchParams.get('Value')
+    await mutateAccounts((accounts) => {
+      const target = accounts.find((entry) => entry.Username === account.Username)
+      target.Fields = target.Fields ?? {}
+      target.Fields[field] = value
+    })
+    return legacyWebReply(response, `Set Field ${field} to ${value} for ${account.Username}`, { success: true, v2 })
+  }
+
+  if (method === 'RemoveField' && url.searchParams.get('Field')) {
+    if (!config.allowAccountEditing) {
+      return legacyWebReply(response, 'Method `RemoveField` not allowed', { success: false, statusCode: 401, rawBody: 'Method not allowed', v2 })
+    }
+    const field = url.searchParams.get('Field')
+    await mutateAccounts((accounts) => {
+      const target = accounts.find((entry) => entry.Username === account.Username)
+      if (target.Fields) {
+        delete target.Fields[field]
+      }
+    })
+    return legacyWebReply(response, `Removed Field ${field} from ${account.Username}`, { success: true, v2 })
+  }
+
+  if (method === 'SetAvatar' && body.trim()) {
+    const avatarDetails = JSON.parse(body)
+    await applyAvatarDetails(account, avatarDetails)
+    return legacyWebReply(response, `Attempting to set avatar of ${account.Username} to ${body}`, { success: true, v2 })
+  }
+
+  if (method === 'SetAlias' && body.trim()) {
+    if (!config.allowAccountEditing) {
+      return legacyWebReply(response, 'Method `SetAlias` not allowed', { success: false, rawBody: 'Method not allowed', v2 })
+    }
+    await mutateAccounts((accounts) => {
+      const target = accounts.find((entry) => entry.Username === account.Username)
+      target._Alias = body
+      target.Alias = body
+    })
+    return legacyWebReply(response, `Set Alias of ${account.Username} to ${body}`, { success: true, v2 })
+  }
+
+  if (method === 'SetDescription' && body.trim()) {
+    if (!config.allowAccountEditing) {
+      return legacyWebReply(response, 'Method `SetDescription` not allowed', { success: false, rawBody: 'Method not allowed', v2 })
+    }
+    await mutateAccounts((accounts) => {
+      const target = accounts.find((entry) => entry.Username === account.Username)
+      target._Description = body
+      target.Description = body
+    })
+    return legacyWebReply(response, `Set Description of ${account.Username} to ${body}`, { success: true, v2 })
+  }
+
+  if (method === 'AppendDescription' && body.trim()) {
+    if (!config.allowAccountEditing) {
+      return legacyWebReply(response, 'Method `AppendDescription` not allowed', { success: false, rawBody: 'Method not allowed', v2 })
+    }
+    await mutateAccounts((accounts) => {
+      const target = accounts.find((entry) => entry.Username === account.Username)
+      const current = target._Description ?? target.Description ?? ''
+      target._Description = `${current}${body}`
+      target.Description = target._Description
+    })
+    return legacyWebReply(response, `Appended Description of ${account.Username} with ${body}`, { success: true, v2 })
+  }
+
+  return legacyWebReply(response, '404 not found', { success: false, statusCode: 404, v2 })
+}
+
+function stopLegacyWebServer() {
+  return new Promise((resolve) => {
+    if (!legacyWebServerState.server) {
+      legacyWebServerState.host = ''
+      legacyWebServerState.port = 0
+      resolve({ ok: true, message: 'Legacy web server is not running.' })
+      return
+    }
+
+    const server = legacyWebServerState.server
+    legacyWebServerState.server = null
+    legacyWebServerState.host = ''
+    legacyWebServerState.port = 0
+    server.close(() => resolve({ ok: true, message: 'Legacy web server stopped.' }))
+  })
+}
+
+function startLegacyWebServer() {
+  const config = getLegacyWebServerConfig()
+  const host = config.allowExternalConnections ? '0.0.0.0' : '127.0.0.1'
+
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((request, response) => {
+      void handleLegacyWebRequest(request, response).catch((error) => {
+        writeDebugLog('legacy-web.request.error', { message: error instanceof Error ? error.message : String(error) })
+        legacyWebReply(response, error instanceof Error ? error.message : 'Internal server error', {
+          success: false,
+          statusCode: 500,
+          v2: request.url?.startsWith('/v2/') ?? false,
+        })
+      })
+    })
+
+    server.on('error', (error) => reject(error))
+    server.listen(config.port, host, () => {
+      legacyWebServerState.server = server
+      legacyWebServerState.host = host
+      legacyWebServerState.port = config.port
+      writeDebugLog('legacy-web.started', { host, port: config.port })
+      resolve({ ok: true, message: `Legacy web server listening on http://${host}:${config.port}/` })
+    })
+  })
+}
+
+async function syncLegacyWebServer() {
+  const config = getLegacyWebServerConfig()
+  if (!config.enabled) {
+    return await stopLegacyWebServer()
+  }
+
+  const desiredHost = config.allowExternalConnections ? '0.0.0.0' : '127.0.0.1'
+  if (legacyWebServerState.server && legacyWebServerState.host === desiredHost && legacyWebServerState.port === config.port) {
+    return { ok: true, message: `Legacy web server listening on http://${desiredHost}:${config.port}/` }
+  }
+
+  await stopLegacyWebServer()
+  return await startLegacyWebServer()
+}
+
+function stopMultiRobloxHelper() {
+  if (multiRobloxState.helper && !multiRobloxState.helper.killed) {
+    try {
+      multiRobloxState.helper.kill()
+    } catch {}
+  }
+
+  multiRobloxState.helper = null
+  multiRobloxState.ready = false
+  multiRobloxState.failed = false
+  multiRobloxState.failureMessage = ''
+}
+
+async function ensureMultiRobloxHelper() {
+  const enabled = readSettings().General?.EnableMultiRbx === 'true'
+  multiRobloxState.enabled = enabled
+
+  if (!enabled) {
+    stopMultiRobloxHelper()
+    return { enabled: false, ready: false, message: 'Multi Roblox is disabled.' }
+  }
+
+  if (multiRobloxState.helper && multiRobloxState.ready && !multiRobloxState.helper.killed) {
+    return { enabled: true, ready: true, message: 'Multi Roblox mutex is active.' }
+  }
+
+  stopMultiRobloxHelper()
+
+  const script = [
+    '$ErrorActionPreference = "Stop"',
+    '$mutex = New-Object System.Threading.Mutex($true, "ROBLOX_singletonMutex")',
+    'if (-not $mutex.WaitOne([TimeSpan]::Zero, $true)) { Write-Output "MUTEX_BUSY"; exit 2 }',
+    'Write-Output "MUTEX_READY"',
+    'while ($true) { Start-Sleep -Seconds 3600 }',
+  ].join('; ')
+
+  return await new Promise((resolve) => {
+    const helper = spawn(
+      windowsPowerShellPath,
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    )
+
+    multiRobloxState.helper = helper
+    multiRobloxState.ready = false
+    multiRobloxState.failed = false
+    multiRobloxState.failureMessage = ''
+
+    let settled = false
+    let stderr = ''
+
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+
+    helper.stdout.on('data', (chunk) => {
+      const text = String(chunk)
+      if (text.includes('MUTEX_READY')) {
+        multiRobloxState.ready = true
+        multiRobloxState.failed = false
+        multiRobloxState.failureMessage = ''
+        writeDebugLog('multi-rbx.ready')
+        finish({ enabled: true, ready: true, message: 'Multi Roblox mutex is active.' })
+      } else if (text.includes('MUTEX_BUSY')) {
+        const message = 'Roblox is already running, so Multi Roblox could not take over the singleton mutex.'
+        multiRobloxState.ready = false
+        multiRobloxState.failed = true
+        multiRobloxState.failureMessage = message
+        writeDebugLog('multi-rbx.busy')
+        stopMultiRobloxHelper()
+        finish({ enabled: true, ready: false, message })
+      }
+    })
+
+    helper.stderr.on('data', (chunk) => {
+      stderr += String(chunk)
+    })
+
+    helper.once('exit', (code) => {
+      const message =
+        multiRobloxState.failureMessage ||
+        (stderr.trim() || `Multi Roblox helper exited unexpectedly with code ${code ?? 'unknown'}.`)
+
+      if (!multiRobloxState.ready) {
+        multiRobloxState.failed = true
+        multiRobloxState.failureMessage = message
+        writeDebugLog('multi-rbx.exit', { code, message })
+        stopMultiRobloxHelper()
+        finish({ enabled: true, ready: false, message })
+      } else {
+        writeDebugLog('multi-rbx.closed', { code })
+        stopMultiRobloxHelper()
+      }
+    })
+  })
+}
+
+function removeSetting(section, key) {
+  const ini = readSettings()
+  if (ini[section]) {
+    delete ini[section][key]
+    if (Object.keys(ini[section]).length === 0) {
+      delete ini[section]
+    }
+  }
   fs.writeFileSync(settingsFilePath, serializeIni(ini), 'utf8')
   return ini
 }
@@ -592,7 +1163,7 @@ async function loadAssetDetails(assetId) {
 }
 
 function normalizeGameSearchEntry(game) {
-  const placeId = Number(game?.PlaceID ?? game?.placeId ?? game?.PlaceId ?? 0)
+  const placeId = Number(game?.rootPlaceId ?? game?.PlaceID ?? game?.placeId ?? game?.PlaceId ?? 0)
   const name = game?.Name ?? game?.name ?? 'Unknown'
   const upVotes = Number(game?.TotalUpVotes ?? game?.totalUpVotes ?? 0)
   const downVotes = Number(game?.TotalDownVotes ?? game?.totalDownVotes ?? 0)
@@ -635,13 +1206,15 @@ async function searchGames(query = '', page = 0) {
     })
 
     if (!response.ok) {
+      const message = extractRobloxErrorMessage(text, `Roblox game search failed (${response.status}).`)
       writeDebugLog('searchGames.error', {
         query: trimmedQuery,
         page: requestedPage,
         status: response.status,
+        message,
         bodyPreview: text.slice(0, 500),
       })
-      throw new Error(`Roblox game search failed (${response.status}).`)
+      throw new Error(message)
     }
 
     payload = JSON.parse(text)
@@ -670,6 +1243,7 @@ async function searchGames(query = '', page = 0) {
 function normalizeServerEntry(server) {
   return {
     id: server?.id ?? server?.name ?? '',
+    placeId: Number(server?.placeId ?? 0),
     playing: Number(server?.playing ?? 0),
     maxPlayers: Number(server?.maxPlayers ?? 0),
     ping: Number(server?.ping ?? 0),
@@ -699,7 +1273,7 @@ async function fetchPublicServers(placeId) {
     }
 
     const payload = JSON.parse(text)
-    servers.push(...(payload?.data ?? []).map((server) => normalizeServerEntry({ ...server, type: 'Public' })))
+    servers.push(...(payload?.data ?? []).map((server) => normalizeServerEntry({ ...server, type: 'Public', placeId })))
     cursor = payload?.nextPageCursor ?? ''
     pageCount += 1
 
@@ -734,6 +1308,7 @@ async function fetchVipServers(placeId, account) {
           ...server,
           id: server?.name ?? server?.id ?? '',
           type: 'VIP',
+          placeId,
         }),
       ),
     )
@@ -759,7 +1334,7 @@ async function loadServers(placeId, includeVip = true) {
     includeVip ? fetchVipServers(numericPlaceId, primaryAccount) : Promise.resolve([]),
   ])
 
-  return [...publicServers, ...vipServers]
+  return [...publicServers, ...vipServers].map((server) => ({ ...server, placeId: numericPlaceId }))
 }
 
 async function findServerByPlayer(placeId, username) {
@@ -826,7 +1401,7 @@ async function findServerByPlayer(placeId, username) {
 
       const batchPayload = JSON.parse(batchText)
       if ((batchPayload?.data ?? []).some((avatar) => avatar.imageUrl === imageUrl)) {
-        return normalizeServerEntry({ ...server, type: 'Public' })
+        return normalizeServerEntry({ ...server, type: 'Public', placeId })
       }
     }
 
@@ -1066,6 +1641,34 @@ async function fetchRoblox(endpoint, options = {}) {
   return { response, text }
 }
 
+function extractRobloxErrorMessage(text, fallbackMessage) {
+  const fallback = String(fallbackMessage ?? 'Roblox request failed.').trim()
+  if (!text) return fallback
+
+  const trimmed = String(text).trim()
+  if (!trimmed) return fallback
+
+  if (/<!DOCTYPE html/i.test(trimmed) || /<html[\s>]/i.test(trimmed)) {
+    return fallback
+  }
+
+  try {
+    const payload = JSON.parse(trimmed)
+    const message =
+      payload?.errors?.find?.((entry) => typeof entry?.message === 'string' && entry.message.trim())?.message ??
+      payload?.error ??
+      payload?.errorMessage ??
+      payload?.errorMsg ??
+      payload?.message ??
+      payload?.Message ??
+      ''
+
+    return String(message).trim() || fallback
+  } catch {
+    return trimmed.length > 280 ? fallback : trimmed
+  }
+}
+
 function getSetCookieValues(response) {
   if (typeof response.headers.getSetCookie === 'function') {
     return response.headers.getSetCookie()
@@ -1148,10 +1751,17 @@ async function getAuthenticationTicket(cookie) {
     body: JSON.stringify({}),
   })
 
+  if (!response.ok) {
+    const text = await response.text()
+    const message = extractRobloxErrorMessage(text, `Roblox did not return an authentication ticket (${response.status}).`)
+    writeDebugLog('launch.ticket-error', { status: response.status, message, bodyPreview: text.slice(0, 500) })
+    throw new Error(message)
+  }
+
   const ticket = response.headers.get('rbx-authentication-ticket')
   if (!ticket) {
     const text = await response.text()
-    throw new Error(text || `Roblox did not return an authentication ticket (${response.status}).`)
+    throw new Error(extractRobloxErrorMessage(text, `Roblox did not return an authentication ticket (${response.status}).`))
   }
 
   return ticket
@@ -1475,16 +2085,27 @@ async function stopNexusServer() {
   return serializeControlState().server
 }
 
-function buildPlaceLauncherUrl({ placeId, jobId = '', followUser = false, joinVip = false, browserTrackerId }) {
+function buildPlaceLauncherUrl({
+  placeId,
+  jobId = '',
+  followUser = false,
+  followUserId = '',
+  joinVip = false,
+  browserTrackerId,
+  isTeleport = false,
+}) {
   if (joinVip) {
     return `https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestPrivateGame&placeId=${placeId}&accessCode=${encodeURIComponent(jobId)}&linkCode=`
   }
 
   if (followUser) {
-    return `https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestFollowUser&userId=${placeId}`
+    return `https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestFollowUser&userId=${followUserId}`
   }
 
-  const jobFragment = jobId ? `Job&browserTrackerId=${browserTrackerId}&placeId=${placeId}&gameId=${encodeURIComponent(jobId)}` : `&browserTrackerId=${browserTrackerId}&placeId=${placeId}`
+  const teleportFragment = isTeleport ? '&isTeleport=true' : ''
+  const jobFragment = jobId
+    ? `Job&browserTrackerId=${browserTrackerId}&placeId=${placeId}&gameId=${encodeURIComponent(jobId)}${teleportFragment}`
+    : `&browserTrackerId=${browserTrackerId}&placeId=${placeId}${teleportFragment}`
   return `https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame${jobFragment}&isPlayTogetherGame=false`
 }
 
@@ -1495,32 +2116,147 @@ function buildLaunchUri(ticket, launcherUrl, browserTrackerId) {
   )}+browsertrackerid:${browserTrackerId}+robloxLocale:en_us+gameLocale:en_us+channel:+LaunchExp:InApp`
 }
 
+function findRobloxExecutable(currentVersion) {
+  const version = String(currentVersion ?? '').trim()
+  if (!version) {
+    return null
+  }
+
+  const candidates = [
+    path.join('C:\\Program Files (x86)\\Roblox\\Versions', version, 'RobloxPlayerBeta.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Roblox', 'Versions', version, 'RobloxPlayerBeta.exe'),
+  ]
+
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) ?? null
+}
+
+async function launchWithOldJoinExecutable({
+  ticket,
+  placeId,
+  jobId,
+  followUser,
+  followUserId,
+  joinVip,
+  currentVersion,
+}) {
+  const executable = findRobloxExecutable(currentVersion)
+  if (!executable) {
+    throw new Error('Failed to find RobloxPlayerBeta.exe for the selected client version.')
+  }
+
+  let launcherUrl = ''
+  if (joinVip) {
+    launcherUrl = `https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestPrivateGame&placeId=${placeId}&accessCode=${encodeURIComponent(jobId)}&linkCode=`
+  } else if (followUser) {
+    launcherUrl = `https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestFollowUser&userId=${followUserId}`
+  } else {
+    launcherUrl = `https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame${jobId ? 'Job' : ''}&placeId=${placeId}${jobId ? `&gameId=${encodeURIComponent(jobId)}` : ''}&isPlayTogetherGame=false`
+  }
+
+  const child = spawn(executable, ['--app', '-t', ticket, '-j', launcherUrl], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  child.unref()
+}
+
 async function launchAccount(account, payload) {
   if (!account?.SecurityToken) {
     throw new Error(`${account?.Username ?? 'Selected account'} does not have a saved security token.`)
   }
 
-  const placeId = Number(payload.placeId)
-  if (!Number.isFinite(placeId) || placeId <= 0) {
+  const multiRoblox = await ensureMultiRobloxHelper()
+  if (multiRoblox.enabled && !multiRoblox.ready) {
+    throw new Error(multiRoblox.message)
+  }
+
+  const useOldJoin = payload.useOldJoin === true
+  const isTeleport = payload.isTeleport === true
+
+  let resolvedPlaceId = payload.placeId
+  let resolvedJobId = payload.jobId ?? ''
+
+  if (payload.followUser !== true) {
+    const savedPlaceId = String(account.Fields?.SavedPlaceId ?? '').trim()
+    const savedJobId = String(account.Fields?.SavedJobId ?? '').trim()
+
+    if (savedPlaceId) {
+      resolvedPlaceId = savedPlaceId
+    }
+
+    if (savedJobId) {
+      resolvedJobId = savedJobId
+    }
+  }
+
+  const placeId = Number(resolvedPlaceId)
+  const followUserId = Number(payload.followUserId)
+  if (payload.followUser === true) {
+    if (!Number.isFinite(followUserId) || followUserId <= 0) {
+      throw new Error('A valid follow user ID is required.')
+    }
+  } else if (!Number.isFinite(placeId) || placeId <= 0) {
     throw new Error('A valid place ID is required.')
   }
 
   const browserTrackerId = `${randomInt(100000, 175000)}${randomInt(100000, 900000)}`
-  const ticket = await getAuthenticationTicket(account.SecurityToken)
-  const launcherUrl = buildPlaceLauncherUrl({
-    placeId,
-    jobId: payload.jobId ?? '',
-    followUser: payload.followUser === true,
-    joinVip: payload.joinVip === true,
-    browserTrackerId,
-  })
+  writeDebugLog('launch.account.start', {
+      username: account.Username,
+      placeId,
+      jobId: resolvedJobId,
+      followUser: payload.followUser === true,
+      followUserId: payload.followUserId ?? '',
+      joinVip: payload.joinVip === true,
+      useOldJoin,
+      isTeleport,
+      currentVersion: payload.currentVersion ?? '',
+      usedSavedLaunch: resolvedPlaceId !== payload.placeId || resolvedJobId !== (payload.jobId ?? ''),
+    })
 
-  await shell.openExternal(buildLaunchUri(ticket, launcherUrl, browserTrackerId))
+  try {
+    const ticket = await getAuthenticationTicket(account.SecurityToken)
+    if (useOldJoin) {
+      await launchWithOldJoinExecutable({
+        ticket,
+        placeId,
+        jobId: resolvedJobId,
+        followUser: payload.followUser === true,
+        followUserId: payload.followUserId ?? '',
+        joinVip: payload.joinVip === true,
+        currentVersion: payload.currentVersion ?? '',
+      })
+    } else {
+      const launcherUrl = buildPlaceLauncherUrl({
+        placeId,
+        jobId: resolvedJobId,
+        followUser: payload.followUser === true,
+        followUserId: payload.followUserId ?? '',
+        joinVip: payload.joinVip === true,
+        browserTrackerId,
+        isTeleport,
+      })
+
+      await shell.openExternal(buildLaunchUri(ticket, launcherUrl, browserTrackerId))
+    }
+    writeDebugLog('launch.account.success', { username: account.Username, placeId, browserTrackerId })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    writeDebugLog('launch.account.error', { username: account.Username, placeId, message })
+    throw new Error(`${account.Username}: ${message}`)
+  }
 }
 
 async function openBrowserForAccount(account, payload) {
   if (!account?.SecurityToken) {
     throw new Error(`${account?.Username ?? 'Selected account'} does not have a saved security token.`)
+  }
+
+  const targetUrl = payload.url?.trim() || 'https://www.roblox.com/home'
+  try {
+    new URL(targetUrl)
+  } catch {
+    throw new Error(`Invalid browser URL: ${targetUrl}`)
   }
 
   const browserPartition = `persist:ram-${account.Username.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}-${randomInt(1000, 9999)}`
@@ -1551,14 +2287,45 @@ async function openBrowserForAccount(account, payload) {
     sameSite: 'no_restriction',
   })
 
-  const targetUrl = payload.url?.trim() || 'https://www.roblox.com/home'
+  const scriptsToRun = []
+
+  if (payload.browserMode === 'groupJoin') {
+    scriptsToRun.push(`
+      (() => {
+        const clickJoin = () => {
+          const candidates = [
+            document.querySelector('#group-join-button'),
+            document.querySelector('[data-testid="group-join-button"]'),
+            ...Array.from(document.querySelectorAll('button'))
+              .filter((button) => /join group/i.test(button.textContent || ''))
+          ].filter(Boolean);
+
+          const target = candidates[0];
+          if (target) {
+            target.click();
+          }
+        };
+
+        clickJoin();
+        const timer = window.setInterval(clickJoin, 1200);
+        window.setTimeout(() => window.clearInterval(timer), 15000);
+      })();
+    `)
+  }
+
   if (payload.script?.trim()) {
+    scriptsToRun.push(payload.script)
+  }
+
+  if (scriptsToRun.length > 0) {
     browserWindow.webContents.on('did-finish-load', () => {
-      void browserWindow.webContents.executeJavaScript(payload.script, true).catch(() => {})
+      void browserWindow.webContents.executeJavaScript(scriptsToRun.join('\n'), true).catch(() => {})
     })
   }
 
+  writeDebugLog('browser.account.start', { username: account.Username, targetUrl })
   await browserWindow.loadURL(targetUrl)
+  writeDebugLog('browser.account.success', { username: account.Username, targetUrl })
 }
 
 async function importCookieAccount(cookie, password = '') {
@@ -1805,6 +2572,101 @@ async function getAccountDiagnostics(account) {
   }
 }
 
+async function copyAccountDataToClipboard(usernames, kind) {
+  await ensureAccountStoreLoaded()
+  const selected = usernames.map((username) => findRawAccount(username)).filter(Boolean)
+
+  if (selected.length === 0) {
+    throw new Error('Select at least one account first.')
+  }
+
+  let lines = []
+
+  if (kind === 'authTicket') {
+    lines = (
+      await Promise.all(
+        selected.map(async (account) => {
+          const ticket = await getAuthenticationTicket(account.SecurityToken)
+          return selected.length === 1 ? ticket : `${account.Username}:${ticket}`
+        }),
+      )
+    ).filter(Boolean)
+  } else {
+    lines = selected.map((account) => {
+      switch (kind) {
+        case 'username':
+          return account.Username
+        case 'password':
+          return String(account._Password ?? account.Password ?? '')
+        case 'combo':
+          return `${account.Username}:${String(account._Password ?? account.Password ?? '')}`
+        case 'userId':
+          return String(account.UserID ?? '')
+        case 'securityToken':
+          return String(account.SecurityToken ?? '')
+        case 'profile':
+          return `https://www.roblox.com/users/${account.UserID}/profile`
+        case 'group':
+          return String(account.Group ?? 'Default')
+        default:
+          throw new Error(`Unsupported clipboard kind: ${kind}`)
+      }
+    })
+  }
+
+  const text = lines.join('\n')
+  clipboard.writeText(text)
+  return {
+    ok: true,
+    message: `Copied ${kind} for ${selected.length} account${selected.length === 1 ? '' : 's'}.`,
+  }
+}
+
+async function dumpAccounts(usernames) {
+  await ensureAccountStoreLoaded()
+  const selected = usernames.map((username) => findRawAccount(username)).filter(Boolean)
+
+  if (selected.length === 0) {
+    throw new Error('Select at least one account first.')
+  }
+
+  const dumpsPath = path.join(repoRoot, 'AccountDumps')
+  fs.mkdirSync(dumpsPath, { recursive: true })
+
+  for (const account of selected) {
+    const diagnostics = await getAccountDiagnostics(account)
+    const createdValue = diagnostics.userInfo?.created
+    let accountAge = 'UNKNOWN'
+
+    if (typeof createdValue === 'string') {
+      const createdAt = new Date(createdValue)
+      if (!Number.isNaN(createdAt.getTime())) {
+        accountAge = `${((Date.now() - createdAt.getTime()) / 86400000).toFixed(1)}`
+      }
+    }
+
+    const lines = [
+      `Username: ${account.Username}`,
+      `UserId: ${account.UserID ?? ''}`,
+      `Robux: ${diagnostics.robux ?? 'UNKNOWN'}`,
+      `Account Age: ${accountAge}`,
+      `Email Status: ${JSON.stringify(diagnostics.emailInfo ?? {})}`,
+      `User Info: ${JSON.stringify(diagnostics.userInfo ?? {})}`,
+      `Other: ${JSON.stringify(diagnostics.mobileInfo ?? {})}`,
+      `Fields: ${JSON.stringify(account.Fields ?? {})}`,
+    ]
+
+    fs.writeFileSync(path.join(dumpsPath, `${account.Username}.txt`), lines.join('\n'), 'utf8')
+  }
+
+  await shell.openPath(dumpsPath)
+  return {
+    ok: true,
+    message: `Exported ${selected.length} account dump${selected.length === 1 ? '' : 's'} to AccountDumps.`,
+    path: dumpsPath,
+  }
+}
+
 async function runAccountTool(account, payload) {
   switch (payload.action) {
     case 'get_cookie':
@@ -1955,6 +2817,7 @@ ipcMain.handle('ram:load-state', async () => {
     accountsLocked: accountsResult.locked,
     accountSource: accountsResult.source,
     settings: readSettings(),
+    theme: readTheme(),
     recentGames: loadRecentGames(),
     favoriteGames: readFavoriteGames(),
   }
@@ -1972,7 +2835,75 @@ ipcMain.handle('ram:unlock-accounts', async (_event, password) => {
 
 ipcMain.handle('ram:save-setting', async (_event, payload) => {
   writeDebugLog('ipc.save-setting', payload)
-  return saveSetting(payload.section, payload.key, payload.value)
+  const next = saveSetting(payload.section, payload.key, payload.value)
+
+  if (payload.section === 'General' && payload.key === 'EnableMultiRbx') {
+    const result = await ensureMultiRobloxHelper()
+    writeDebugLog('ipc.save-setting.multi-rbx', result)
+  }
+
+  return next
+})
+
+ipcMain.handle('ram:save-theme', async (_event, payload) => {
+  writeDebugLog('ipc.save-theme', payload)
+  return saveTheme(payload ?? {})
+})
+
+ipcMain.handle('ram:pick-custom-client-settings', async () => {
+  writeDebugLog('ipc.pick-custom-client-settings')
+  const result = await dialog.showOpenDialog({
+    title: 'Select ClientAppSettings JSON',
+    filters: [{ name: 'JSON Files', extensions: ['json'] }],
+    properties: ['openFile'],
+  })
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return {
+      ok: false,
+      canceled: true,
+      message: 'Custom client settings selection was canceled.',
+      settings: readSettings(),
+    }
+  }
+
+  const sourcePath = result.filePaths[0]
+  const content = fs.readFileSync(sourcePath, 'utf8')
+  JSON.parse(content)
+
+  const destinationPath = path.join(repoRoot, 'CustomClientAppSettings.json')
+  fs.copyFileSync(sourcePath, destinationPath)
+  const settings = saveSetting('General', 'CustomClientSettings', destinationPath)
+
+  return {
+    ok: true,
+    canceled: false,
+    message: `Custom client settings saved from ${path.basename(sourcePath)}.`,
+    settings,
+    path: destinationPath,
+  }
+})
+
+ipcMain.handle('ram:clear-custom-client-settings', async () => {
+  writeDebugLog('ipc.clear-custom-client-settings')
+  const destinationPath = path.join(repoRoot, 'CustomClientAppSettings.json')
+  if (fs.existsSync(destinationPath)) {
+    fs.unlinkSync(destinationPath)
+  }
+
+  const settings = removeSetting('General', 'CustomClientSettings')
+  return {
+    ok: true,
+    message: 'Custom client settings override removed.',
+    settings,
+  }
+})
+
+ipcMain.handle('ram:open-release-page', async () => {
+  const url = 'https://github.com/ic3w0lf22/Roblox-Account-Manager/releases/latest'
+  writeDebugLog('ipc.open-release-page', { url })
+  await shell.openExternal(url)
+  return { ok: true, message: 'Opened the latest release page.', url }
 })
 
 ipcMain.handle('ram:update-account', async (_event, payload) => {
@@ -2026,6 +2957,56 @@ ipcMain.handle('ram:remove-accounts', async (_event, usernames) => {
       }
     }
   })
+})
+
+ipcMain.handle('ram:sort-accounts', async () => {
+  writeDebugLog('ipc.sort-accounts')
+  return mutateAccounts((accounts) => {
+    accounts.sort((left, right) => {
+      const leftAllDigits = left.Username.split('').every((char) => /\d/.test(char))
+      const rightAllDigits = right.Username.split('').every((char) => /\d/.test(char))
+      if (leftAllDigits !== rightAllDigits) return leftAllDigits ? 1 : -1
+
+      const leftAnyLetter = left.Username.split('').some((char) => /[a-z]/i.test(char))
+      const rightAnyLetter = right.Username.split('').some((char) => /[a-z]/i.test(char))
+      if (leftAnyLetter !== rightAnyLetter) return leftAnyLetter ? -1 : 1
+
+      return left.Username.localeCompare(right.Username)
+    })
+  })
+})
+
+ipcMain.handle('ram:save-launch-for-accounts', async (_event, payload) => {
+  writeDebugLog('ipc.save-launch-for-accounts', payload)
+  return mutateAccounts((accounts) => {
+    const usernames = new Set(payload?.usernames ?? [])
+    const placeId = String(payload?.placeId ?? '').trim()
+    const jobId = String(payload?.jobId ?? '').trim()
+    const clear = payload?.clear === true || (!placeId && !jobId)
+
+    for (const account of accounts) {
+      if (!usernames.has(account.Username)) continue
+      account.Fields = account.Fields ?? {}
+
+      if (clear) {
+        delete account.Fields.SavedPlaceId
+        delete account.Fields.SavedJobId
+      } else {
+        account.Fields.SavedPlaceId = placeId
+        account.Fields.SavedJobId = jobId
+      }
+    }
+  })
+})
+
+ipcMain.handle('ram:copy-account-data', async (_event, payload) => {
+  writeDebugLog('ipc.copy-account-data', payload)
+  return copyAccountDataToClipboard(payload?.usernames ?? [], payload?.kind)
+})
+
+ipcMain.handle('ram:dump-account-details', async (_event, payload) => {
+  writeDebugLog('ipc.dump-account-details', payload)
+  return dumpAccounts(payload?.usernames ?? [])
 })
 
 ipcMain.handle('ram:import-cookie', async (_event, payload) => {
@@ -2164,6 +3145,37 @@ ipcMain.handle('ram:get-outfit-details', async (_event, payload) => {
   }
 })
 
+ipcMain.handle('ram:wear-avatar-json', async (_event, payload) => {
+  writeDebugLog('ipc.wear-avatar-json', {
+    username: payload?.username,
+    hasJson: Boolean(String(payload?.json ?? '').trim()),
+  })
+  await ensureAccountStoreLoaded()
+  const account = findRawAccount(payload?.username)
+  if (!account) {
+    throw new Error('Select an account first.')
+  }
+
+  const rawJson = String(payload?.json ?? '').trim()
+  if (!rawJson) {
+    throw new Error('Paste avatar JSON first.')
+  }
+
+  let details
+  try {
+    details = JSON.parse(rawJson)
+  } catch {
+    throw new Error('Avatar JSON is not valid JSON.')
+  }
+
+  const result = await applyAvatarDetails(account, details)
+  return {
+    ok: true,
+    message: `Applied avatar JSON to ${account.Username}.`,
+    invalidAssetIds: Array.isArray(result?.invalidAssetIds) ? result.invalidAssetIds : [],
+  }
+})
+
 ipcMain.handle('ram:wear-outfit', async (_event, payload) => {
   writeDebugLog('ipc.wear-outfit', payload)
   await ensureAccountStoreLoaded()
@@ -2179,6 +3191,11 @@ ipcMain.handle('ram:wear-outfit', async (_event, payload) => {
     message: `Applied ${details?.name ?? `outfit ${payload?.outfitId}`} to ${account.Username}.`,
     invalidAssetIds: Array.isArray(result?.invalidAssetIds) ? result.invalidAssetIds : [],
   }
+})
+
+ipcMain.handle('ram:copy-text', async (_event, payload) => {
+  writeDebugLog('ipc.copy-text', { label: payload?.label })
+  return copyTextToClipboard(payload?.text ?? '', payload?.label ?? 'text')
 })
 
 ipcMain.handle('ram:get-asset-details', async (_event, payload) => {
@@ -2375,41 +3392,80 @@ ipcMain.handle('ram:get-account-diagnostics', async (_event, payload) => {
 
 ipcMain.handle('ram:perform-action', async (_event, payload) => {
   writeDebugLog('ipc.perform-action', payload)
-  await ensureAccountStoreLoaded()
-  const selected = (payload.accounts ?? [])
-    .map((username) => findRawAccount(username))
-    .filter(Boolean)
+  try {
+    await ensureAccountStoreLoaded()
+    const selected = (payload.accounts ?? [])
+      .map((username) => findRawAccount(username))
+      .filter(Boolean)
 
-  if (selected.length === 0) {
-    return { ok: false, message: 'Select at least one account first.' }
-  }
+    if (selected.length === 0) {
+      return { ok: false, message: 'Select at least one account first.' }
+    }
 
-  if (payload.type === 'launch') {
-    for (let index = 0; index < selected.length; index += 1) {
-      await launchAccount(selected[index], payload)
+    if (payload.type === 'launch') {
+      for (let index = 0; index < selected.length; index += 1) {
+        await launchAccount(selected[index], payload)
 
-      if (index < selected.length - 1) {
-        const settings = readSettings()
-        const joinDelay = Number(settings.General?.AccountJoinDelay ?? '8')
-        await delay(Math.max(Number.isFinite(joinDelay) ? joinDelay * 1000 : 2000, 500))
+        if (index < selected.length - 1) {
+          const settings = readSettings()
+          const joinDelay = Number(settings.General?.AccountJoinDelay ?? '8')
+          await delay(Math.max(Number.isFinite(joinDelay) ? joinDelay * 1000 : 2000, 500))
+        }
       }
+
+      const result = {
+        ok: true,
+        message: `Launched ${selected.length} account${selected.length === 1 ? '' : 's'} into place ${payload.placeId}.`,
+      }
+      writeDebugLog('ipc.perform-action.success', result)
+      return result
     }
 
-    return {
-      ok: true,
-      message: `Launched ${selected.length} account${selected.length === 1 ? '' : 's'} into place ${payload.placeId}.`,
+    if (payload.type === 'browser') {
+      await Promise.all(selected.map((account) => openBrowserForAccount(account, payload)))
+      const result = {
+        ok: true,
+        message: `Opened ${selected.length} logged-in browser window${selected.length === 1 ? '' : 's'}.`,
+      }
+      writeDebugLog('ipc.perform-action.success', result)
+      return result
     }
+
+    if (payload.type === 'copy-player-link') {
+      const ticket = await getAuthenticationTicket(selected[0].SecurityToken)
+      const launcherUrl = buildPlaceLauncherUrl({
+        placeId: payload.placeId,
+        jobId: payload.jobId ?? '',
+        followUser: payload.followUser === true,
+        followUserId: payload.followUserId ?? '',
+        joinVip: payload.joinVip === true,
+        browserTrackerId: `${randomInt(100000, 175000)}${randomInt(100000, 900000)}`,
+      })
+      const playerLink = buildLaunchUri(ticket, launcherUrl, `${randomInt(100000, 175000)}${randomInt(100000, 900000)}`)
+      clipboard.writeText(playerLink)
+      const result = { ok: true, message: 'Copied roblox-player launch link.' }
+      writeDebugLog('ipc.perform-action.success', result)
+      return result
+    }
+
+    if (payload.type === 'copy-app-link') {
+      const ticket = await getAuthenticationTicket(selected[0].SecurityToken)
+      const launchTime = Math.floor(Date.now())
+      const browserTrackerId = `${randomInt(500000, 600000)}${randomInt(10000, 90000)}`
+      clipboard.writeText(
+        `roblox-player:1+launchmode:app+gameinfo:${ticket}+launchtime:${launchTime}+browsertrackerid:${browserTrackerId}+robloxLocale:en_us+gameLocale:en_us`,
+      )
+      const result = { ok: true, message: 'Copied Roblox app auth link.' }
+      writeDebugLog('ipc.perform-action.success', result)
+      return result
+    }
+
+    return { ok: false, message: 'Unknown action.' }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    writeDebugLog('ipc.perform-action.error', { type: payload?.type, message })
+    return { ok: false, message }
   }
-
-  if (payload.type === 'browser') {
-    await Promise.all(selected.map((account) => openBrowserForAccount(account, payload)))
-    return {
-      ok: true,
-      message: `Opened ${selected.length} logged-in browser window${selected.length === 1 ? '' : 's'}.`,
-    }
-  }
-
-  return { ok: false, message: 'Unknown action.' }
 })
 
 ipcMain.handle('ram:debug-log', async (_event, payload) => {
@@ -2419,6 +3475,12 @@ ipcMain.handle('ram:debug-log', async (_event, payload) => {
 
 app.whenReady().then(() => {
   createWindow()
+  void ensureMultiRobloxHelper().then((result) => writeDebugLog('app.multi-rbx.init', result))
+  void syncLegacyWebServer()
+    .then((result) => writeDebugLog('app.legacy-web.init', result))
+    .catch((error) =>
+      writeDebugLog('app.legacy-web.init-error', { message: error instanceof Error ? error.message : String(error) }),
+    )
   if (readAccountControlSettings().startOnLaunch) {
     void startNexusServer().catch((error) =>
       pushNexusLog('server.start-on-launch-error', { message: error instanceof Error ? error.message : String(error) }),
@@ -2431,6 +3493,9 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', () => {
+  stopMultiRobloxHelper()
+  void stopLegacyWebServer()
+
   if (nexusState.autoRelaunchTimer) {
     clearInterval(nexusState.autoRelaunchTimer)
     nexusState.autoRelaunchTimer = null

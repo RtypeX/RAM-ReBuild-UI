@@ -40,6 +40,7 @@ type SearchGame = {
 
 type ServerEntry = {
   id: string
+  placeId: number
   playing: number
   maxPlayers: number
   ping: number
@@ -120,6 +121,7 @@ type AppState = {
   accountsLocked: boolean
   accountSource: string
   settings: Record<string, Record<string, string>>
+  theme: Record<string, string>
   recentGames: RecentGame[]
   favoriteGames: FavoriteGame[]
 }
@@ -141,10 +143,36 @@ declare global {
       loadState: () => Promise<AppState>
       unlockAccounts: (password: string) => Promise<Pick<AppState, 'accounts' | 'accountsLocked' | 'accountSource'>>
       saveSetting: (payload: { section: string; key: string; value: string | boolean | number }) => Promise<Record<string, Record<string, string>>>
+      saveTheme: (payload: Record<string, string>) => Promise<Record<string, string>>
+      pickCustomClientSettings: () => Promise<{
+        ok: boolean
+        canceled?: boolean
+        message: string
+        settings: Record<string, Record<string, string>>
+        path?: string
+      }>
+      clearCustomClientSettings: () => Promise<{
+        ok: boolean
+        message: string
+        settings: Record<string, Record<string, string>>
+      }>
+      openReleasePage: () => Promise<{ ok: boolean; message: string; url: string }>
       updateAccount: (payload: { username: string; alias?: string; description?: string; group?: string }) => Promise<AccountMutationResult>
       setAccountField: (payload: { username: string; field: string; value: string }) => Promise<AccountMutationResult>
       removeAccountField: (payload: { username: string; field: string }) => Promise<AccountMutationResult>
       removeAccounts: (usernames: string[]) => Promise<AccountMutationResult>
+      sortAccounts: () => Promise<AccountMutationResult>
+      saveLaunchForAccounts: (payload: {
+        usernames: string[]
+        placeId?: string | number
+        jobId?: string
+        clear?: boolean
+      }) => Promise<AccountMutationResult>
+      copyAccountData: (payload: {
+        usernames: string[]
+        kind: 'username' | 'password' | 'combo' | 'userId' | 'securityToken' | 'profile' | 'group' | 'authTicket'
+      }) => Promise<{ ok: boolean; message: string }>
+      dumpAccountDetails: (payload: { usernames: string[] }) => Promise<{ ok: boolean; message: string; path: string }>
       importCookie: (payload: { cookie: string; password?: string }) => Promise<AccountMutationResult>
       importCookiesBulk: (payload: { cookies: string[]; password?: string }) => Promise<{
         ok: boolean
@@ -177,6 +205,11 @@ declare global {
       }) => Promise<{ ok: boolean; favoriteGames: FavoriteGame[] }>
       getOutfits: (payload: { username: string }) => Promise<{ ok: boolean; items: OutfitEntry[] }>
       getOutfitDetails: (payload: { outfitId: string | number }) => Promise<{ ok: boolean; details: unknown; json: string }>
+      wearAvatarJson: (payload: { username: string; json: string }) => Promise<{
+        ok: boolean
+        message: string
+        invalidAssetIds?: number[]
+      }>
       wearOutfit: (payload: { username: string; outfitId: string | number }) => Promise<{
         ok: boolean
         message: string
@@ -277,8 +310,14 @@ declare global {
         placeId?: string | number
         jobId?: string
         followUser?: boolean
+        followUserId?: string | number
         joinVip?: boolean
+        browserMode?: 'standard' | 'groupJoin'
+        useOldJoin?: boolean
+        isTeleport?: boolean
+        currentVersion?: string
       }) => Promise<{ ok: boolean; message: string }>
+      copyText: (payload: { text: string; label?: string }) => Promise<{ ok: boolean; message: string }>
     }
   }
 }

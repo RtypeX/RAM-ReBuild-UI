@@ -239,6 +239,17 @@ ClientBin/
 *.note
 orleans.codegen.cs
 
+# Roblox Account Manager local runtime data
+AccountData.json
+AccountData.json.backup
+AccountControlData.json
+RecentGames.json
+FavoriteGames.json
+RAMSettings.ini
+RAMTheme.ini
+Nexus.lua
+modern-ui/debug.log
+
 # Including strong name files can present a security risk
 # (https://github.com/github/gitignore/pull/2483#issue-259490424)
 #*.snk
