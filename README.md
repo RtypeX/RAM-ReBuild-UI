@@ -29,6 +29,38 @@ Beware of the risks that you are taking if you accidentally send something to so
 
 If you ever want a friend to join a game using your account, make sure you have the PlaceId and JobId correctly entered, then right click an account, and click "Copy rbx-player link", DO NOT do this if someone asks you for it.
 
+# Building from Source
+
+## Prerequisites
+- [Visual Studio 2022](https://visualstudio.microsoft.com/downloads/) (Community edition is free) with the **.NET desktop development** workload installed
+- [.NET Framework 4.8.1 Developer Pack](https://dotnet.microsoft.com/download/dotnet-framework/net481)
+
+## Steps
+
+1. **Clone the repository**
+   ```
+   git clone https://github.com/RtypeX/RAM-ReBuild-UI.git
+   cd RAM-ReBuild-UI
+   ```
+
+2. **Open the solution**
+   Open `RBX Alt Manager.sln` in Visual Studio 2022.
+
+3. **Restore NuGet packages**
+   In Visual Studio, go to **Tools → NuGet Package Manager → Manage NuGet Packages for Solution** and click **Restore**, or right-click the solution in Solution Explorer and select **Restore NuGet Packages**.
+
+4. **Build the project**
+   Select the **Release** configuration from the toolbar dropdown, then go to **Build → Build Solution** (or press `Ctrl+Shift+B`).
+
+5. **Run**
+   The compiled executable will be located at:
+   ```
+   RBX Alt Manager\bin\Release\Roblox Account Manager.exe
+   ```
+   Double-click it to launch the application.
+
+> **Note:** If you encounter errors on startup, make sure the [.NET Framework 4.8.1 runtime](https://dotnet.microsoft.com/download/dotnet-framework/net481) and the [Visual C++ Redistributable (x86)](https://aka.ms/vs/17/release/vc_redist.x86.exe) are installed.
+
 # Download
 To install this, head over to the [Releases](https://github.com/ic3w0lf22/Roblox-Account-Manager/releases) section and download the rar file at the very top, once downloaded, extract the files into a folder on your desktop and run RBX Alt Manager.exe.
 
